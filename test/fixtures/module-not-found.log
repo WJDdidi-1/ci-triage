@@ -1,0 +1,13 @@
+2026-11-09T11:00:00.0000000Z ##[group]Run npm run build
+2026-11-09T11:00:00.0000000Z npm run build
+2026-11-09T11:00:01.0000000Z
+2026-11-09T11:00:01.0000000Z > my-app@1.4.2 build
+2026-11-09T11:00:01.0000000Z > next build
+2026-11-09T11:00:03.0000000Z
+2026-11-09T11:00:03.0000000Z Failed to compile.
+2026-11-09T11:00:03.0000000Z
+2026-11-09T11:00:03.0000000Z ./src/pages/index.tsx
+2026-11-09T11:00:03.0000000Z Module not found: Can't resolve 'lodash/debounce' in '/home/runner/work/my-app/my-app/src/pages'
+2026-11-09T11:00:03.0000000Z
+2026-11-09T11:00:03.0000000Z > Build failed because of webpack errors
+2026-11-09T11:00:04.0000000Z ##[error]Process completed with exit code 1.

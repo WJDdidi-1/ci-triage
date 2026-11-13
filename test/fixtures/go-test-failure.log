@@ -1,0 +1,8 @@
+2026-11-08T07:15:30.0000000Z ##[group]Run go test ./...
+2026-11-08T07:15:30.0000000Z go test ./...
+2026-11-08T07:15:44.0000000Z --- FAIL: TestParseConfig (0.02s)
+2026-11-08T07:15:44.0000000Z     config_test.go:88: expected 3 retries, got 0
+2026-11-08T07:15:44.0000000Z FAIL
+2026-11-08T07:15:44.0000000Z FAIL	github.com/example/app/internal/config	0.123s
+2026-11-08T07:15:44.0000000Z FAIL	github.com/example/app/internal/config [build failed]
+2026-11-08T07:15:44.0000000Z ##[error]Process completed with exit code 1.

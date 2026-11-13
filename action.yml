@@ -1,0 +1,69 @@
+# ci-triage as a GitHub Action.
+#
+# Runs `ci-triage` on a repo's recent failed runs and fails the job
+# when it finds root causes, so a triage report lands in the log
+# instead of a maintainer reading thousands of log lines by hand. It
+# runs the published npm package (@latest, so a repo using this action
+# always gets the newest triage), not the checkout: nothing in the
+# action needs the repo's own code.
+#
+# This file lives at the repo root on purpose: the GitHub App used to
+# push to this repo cannot write .github/workflows/*, but it can push
+# a repo-root action.yml, so the action stays publishable through the
+# same API push the rest of the repo uses.
+#
+# Usage (copy-paste into a workflow):
+#
+#   jobs:
+#     triage:
+#       runs-on: ubuntu-latest
+#       steps:
+#         - uses: actions/checkout@v4
+#         - uses: WJDdidi-1/ci-triage@main
+#           with:
+#             repo: ${{ github.repository }}
+#             runs: 10
+#
+# The action needs a token with actions:read on the repo: the
+# default is the workflow's own GITHUB_TOKEN, which can read the
+# repo's own runs.
+name: ci-triage
+description: Triage red CI — group recent failed runs by root cause and separate real regressions from flaky failures.
+inputs:
+  repo:
+    description: Repository to triage as owner/repo (default: the workflow's own repo)
+    required: false
+    default: ''
+  runs:
+    description: Failed runs to examine (default 10, max 30)
+    required: false
+    default: '10'
+  workflow:
+    description: Only this workflow (file name or id)
+    required: false
+    default: ''
+  branch:
+    description: Only this branch
+    required: false
+    default: ''
+  token:
+    description: GitHub token for the API (default: the workflow's GITHUB_TOKEN)
+    required: false
+    default: ''
+  args:
+    description: Extra arguments passed to `ci-triage`
+    required: false
+    default: ''
+runs:
+  using: composite
+  steps:
+    - run: |
+        REPO="${{ inputs.repo || github.repository }}"
+        ARGS=""
+        if [ -n "${{ inputs.workflow }}" ]; then ARGS="$ARGS --workflow ${{ inputs.workflow }}"; fi
+        if [ -n "${{ inputs.branch }}" ]; then ARGS="$ARGS --branch ${{ inputs.branch }}"; fi
+        GH_TOKEN="${{ inputs.token || github.token }}" npx -y ci-triage-cli@latest "$REPO" --runs "${{ inputs.runs }}" $ARGS ${{ inputs.args }}
+      shell: bash
+branding:
+  icon: alert-circle
+  color: orange

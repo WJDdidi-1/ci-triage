@@ -1,0 +1,8 @@
+2026-11-10T18:40:00.0000000Z ##[group]Run npm ci
+2026-11-10T18:40:00.0000000Z npm ci
+2026-11-10T18:41:12.0000000Z added 512 packages in 1m
+2026-11-10T18:41:12.0000000Z ##[group]Run npm run test:e2e
+2026-11-10T18:41:12.0000000Z npm run test:e2e
+2026-11-10T19:41:13.0000000Z ##[error]The operation was canceled.
+2026-11-10T19:41:13.0000000Z ##[error]The job has exceeded the maximum execution time of 60 minutes.
+2026-11-10T19:41:13.0000000Z ##[error]Process completed with exit code 1.

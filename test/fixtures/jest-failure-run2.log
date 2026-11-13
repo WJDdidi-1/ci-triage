@@ -1,0 +1,21 @@
+2026-11-12T14:03:11.1234567Z ##[group]Run npm test
+2026-11-12T14:03:11.1234567Z npm test
+2026-11-12T14:03:12.4567890Z
+2026-11-12T14:03:12.4567890Z > my-app@1.4.2 test
+2026-11-12T14:03:12.4567890Z > jest --ci
+2026-11-12T14:03:14.8910111Z
+2026-11-12T14:03:14.8910111Z FAIL src/components/Button.test.tsx
+2026-11-12T14:03:14.8910111Z   ● Button › renders the disabled state
+2026-11-12T14:03:14.8910111Z
+2026-11-12T14:03:14.8910111Z     expect(received).toBe(expected) // Object.is equality
+2026-11-12T14:03:14.8910111Z
+2026-11-12T14:03:14.8910111Z     Expected: "Submit"
+2026-11-12T14:03:14.8910111Z     Received: "Send"
+2026-11-12T14:03:14.8910111Z
+2026-11-12T14:03:14.8910111Z       at Object.<anonymous> (src/components/Button.test.tsx:57:22)
+2026-11-12T14:03:14.8910111Z
+2026-11-12T14:03:14.8910111Z Test Suites: 1 failed, 5 passed, 6 total
+2026-11-12T14:03:14.8910111Z Tests:       1 failed, 46 passed, 47 total
+2026-11-12T14:03:14.8910111Z Snapshots:   0 total
+2026-11-12T14:03:14.8910111Z Time:        3.901 s
+2026-11-12T14:03:15.1011122Z ##[error]Process completed with exit code 1.

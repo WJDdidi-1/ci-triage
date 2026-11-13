@@ -1,0 +1,13 @@
+2026-11-11T09:22:05.9876543Z ##[group]Run npm run build
+2026-11-11T09:22:05.9876543Z npm run build
+2026-11-11T09:22:06.1234567Z
+2026-11-11T09:22:06.1234567Z > my-app@1.4.2 build
+2026-11-11T09:22:06.1234567Z > tsc -p tsconfig.json && vite build
+2026-11-11T09:22:09.8765432Z
+2026-11-11T09:22:09.8765432Z src/utils/format.ts:18:7 - error TS2322: Type 'string' is not assignable to type 'number'.
+2026-11-11T09:22:09.8765432Z
+2026-11-11T09:22:09.8765432Z 18       return value;
+2026-11-11T09:22:09.8765432Z          ~~~~~~
+2026-11-11T09:22:09.8765432Z
+2026-11-11T09:22:09.8765432Z Found 1 error in src/utils/format.ts:18
+2026-11-11T09:22:10.1111111Z ##[error]Process completed with exit code 2.

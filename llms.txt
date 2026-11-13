@@ -1,0 +1,42 @@
+# ci-triage
+
+> Cross-run CI failure triage for GitHub Actions: group recent failed runs by root cause, classify them, and separate real regressions from flaky failures — in one page, from the command line.
+
+## Commands
+
+- `ci-triage <owner/repo>` — triage the last 10 failed runs (default), ranked one-page report.
+- `ci-triage <owner/repo> --runs N` — examine N failed runs (1-30).
+- `ci-triage <owner/repo> --workflow <name> --branch <name>` — narrow to one workflow or branch.
+- `ci-triage <owner/repo> --json` — machine-readable output (the triage result object).
+- `ci-triage <owner/repo> --top N` — show only the top N root causes.
+- `ci-triage --mcp` — stdio MCP server; tools `triage_repo` and `triage_log`.
+- `ci-triage --skill-generate [--global | --project]` — write a SKILL.md; never overwrites an existing file.
+
+## Exit codes
+
+- `0` — no failed job found.
+- `1` — failures found (including failures whose logs could not be read).
+- `2` — usage error or GitHub API error.
+
+## Auth
+
+Set `GH_TOKEN` (or `GITHUB_TOKEN`). GitHub does not allow anonymous job-log downloads, even for public repos: without a token the triage can list failed runs and jobs but cannot read their logs, and reports that plainly (verdict UNKNOWN, exit 1). `gh auth login` also works when the GitHub CLI is logged in.
+
+## How it decides
+
+- Signature: error lines with timestamps, ANSI codes, paths, hashes, versions and counts stripped; same failure on two runs has the same signature.
+- Clustering: same signature is one root cause, ranked by run count.
+- Classification: test failure, build failure, or infra failure (timeouts and the like), from the error lines.
+- Flaky vs real: flaky when the same commit passed on a later run or when failures and successes alternate in the window; failing on every recent run is a real regression.
+- Job logs expire after 90 days on GitHub; an expired log is recorded, not fatal.
+
+## GitHub Action
+
+Repo root `action.yml` — `uses: WJDdidi-1/ci-triage@main` with `repo`, `runs`, `workflow`, `branch`, `token`, `args` inputs. Needs a token with `actions:read` (defaults to the workflow's `GITHUB_TOKEN`).
+
+## Details
+
+- Zero runtime dependencies; pure Node.js standard library; Node >= 18.
+- npm package `ci-triage-cli`, binary `ci-triage`. Repo: https://github.com/WJDdidi-1/ci-triage
+- MCP server: `io.github.WJDdidi-1/ci-triage` (server.json at the repo root).
+- Tests: `npm test` (47 tests: signature, classify, triage, CLI, MCP, skill, registry).
