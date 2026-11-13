@@ -1,0 +1,43 @@
+# Publish the MCP server listing to the official MCP registry
+# (registry.modelcontextprotocol.io) whenever a release is published.
+#
+# The registry is metadata-only: it records server.json, which points at
+# the npm package. The npm publish (publish.yml) and this job both trigger
+# on the release; this job waits for the package to be live on npm before
+# publishing (scripts/check-registry-release.mjs polls for up to 10 min),
+# so the two jobs need no ordering between them.
+#
+# Auth uses GitHub OIDC (no stored secret): mcp-publisher login
+# github-oidc mints a token for the io.github.WJDdidi-1/* namespace.
+name: Publish MCP registry listing
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install mcp-publisher
+        run: |
+          curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
+      - name: Check the package is on npm with the right mcpName
+        run: node scripts/check-registry-release.mjs
+      # The registry's /v0/validate endpoint was unreachable from our
+      # network when this workflow was written, so a failing validate
+      # must not block the publish — the publish step itself validates
+      # server-side and fails clearly if the file is wrong. server.json
+      # is also pinned by test/registry.test.mjs.
+      - run: ./mcp-publisher validate server.json
+        continue-on-error: true
+      - run: ./mcp-publisher login github-oidc
+      - run: ./mcp-publisher publish server.json

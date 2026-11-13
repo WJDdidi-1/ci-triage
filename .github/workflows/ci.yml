@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: node ${{ matrix.node }} on ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-15-intel, windows-latest]
+        node: [18, 20, 22, 24]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - name: install from the lockfile
+        run: npm ci --no-audit --no-fund
+      - name: run the test suite
+        run: npm test
+      - name: the packed tarball installs and runs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist smoke
+          npm pack --pack-destination dist
+          cp dist/*.tgz smoke/package.tgz
+          cd smoke
+          npm init --yes > /dev/null
+          npm install --no-audit --no-fund ./package.tgz
+          node node_modules/ci-triage-cli/bin/ci-triage.js --version
+          node node_modules/ci-triage-cli/bin/ci-triage.js --help > /dev/null
