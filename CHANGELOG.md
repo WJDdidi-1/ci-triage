@@ -2,6 +2,20 @@
 
 ## 0.1.1 — 2026-11-14
 
+- Fix: the CI matrix went red on the first 0.1.1 push (0/12 jobs) and
+  this release fixes all four failure modes before shipping. The zsh
+  completion syntax check now skips when zsh is not installed (the
+  Ubuntu and Windows runners ship none). The TTY star-prompt test
+  now runs the CLI under python3's `pty.spawn` instead of `script`:
+  on macOS `script` exits as soon as its stdin hits EOF, and under a
+  test harness stdin is already EOF, so the child was killed before
+  it printed anything. `doctor`'s bare-temp-dir test now expects the
+  home check to warn on Windows, where `os.homedir()` reads the user
+  profile instead of `$HOME` — the warning is the correct behaviour.
+  The SKILL.md validator now accepts CRLF line endings, and
+  `.gitattributes` pins `skills/*/SKILL.md` to LF so a Windows
+  checkout cannot break the byte-identical marketplace test.
+
 - New: `--annotations` now pins each root cause to the failing file
   and line (`::error file=src/utils/format.ts,line=18,title=…::…`)
   when the log names one, so the annotation also shows in the PR's

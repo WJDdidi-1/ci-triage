@@ -133,10 +133,16 @@ test('doctor: bare temp dir — command fails, nothing is written', () => {
   assert.match(result.stdout, /\[FAIL\] Command — ci-triage is not on PATH/);
   assert.match(result.stdout, /Fix: Install it globally: npm install -g ci-triage-cli/);
   // On POSIX os.homedir() honours $HOME, so the sandboxed HOME
-  // agrees with it and the home check passes; the disagreeing case
-  // (Windows, where os.homedir() reads the profile) is covered by
-  // the unit-level test above.
-  assert.match(result.stdout, /\[ok\] Home — home resolves to /);
+  // agrees with it and the home check passes. On Windows
+  // os.homedir() reads the user profile instead, so the sandboxed
+  // HOME disagrees with it and the home check warns — that warning
+  // is the correct behaviour, not a failure (the unit-level test
+  // above covers the disagreeing case in isolation).
+  if (process.platform === 'win32') {
+    assert.match(result.stdout, /\[warn\] Home — HOME=.* but os\.homedir\(\)=/);
+  } else {
+    assert.match(result.stdout, /\[ok\] Home — home resolves to /);
+  }
   assert.match(result.stdout, /\[warn\] Skill — no SKILL\.md installed/);
   assert.match(result.stdout, /\[warn\] Token — no token found/);
   assert.match(result.stdout, /Fix: Set GH_TOKEN/);

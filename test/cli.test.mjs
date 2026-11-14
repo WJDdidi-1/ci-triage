@@ -75,15 +75,23 @@ test('cli: --json output never carries the star prompt', async () => {
   }
 });
 
-// Async spawn of `script`, so the mock server in this process can still
-// answer while the child runs on a pty. Flags differ per platform like
-// the dev-diagnosis TTY test; Windows has no `script` at all.
+// Async spawn under a pty via python3, so the mock server in this
+// process can still answer while the child runs on a pty. `script`
+// is the obvious tool but on macOS it exits as soon as its stdin
+// hits EOF, and under a test harness stdin is already EOF, so the
+// child is killed before it prints anything (empty output, exit 1).
+// python3's pty.spawn is the same on Linux and macOS, waits for the
+// child, and relays its output; pty.spawn returns the raw wait
+// status, so convert it with os.waitstatus_to_exitcode. Windows has
+// no pty need — the test is skipped there.
+const PTY_CODE = 'import os,pty,sys; sys.exit(os.waitstatus_to_exitcode(pty.spawn(sys.argv[1:])))';
 function runCliOnTty(args, options = {}) {
   return new Promise((resolve, reject) => {
-    const argv = process.platform === 'darwin'
-      ? ['-q', '-e', '/dev/null', process.execPath, bin, ...args]
-      : ['-qec', [process.execPath, bin, ...args].map((a) => `'${String(a).replace(/'/g, `'\\''`)}'`).join(' '), '/dev/null'];
-    const child = spawn('script', argv, { ...options });
+    if (spawnSync('which', ['python3']).status !== 0) {
+      resolve(null);
+      return;
+    }
+    const child = spawn('python3', ['-c', PTY_CODE, process.execPath, bin, ...args], { ...options });
     let stdout = '';
     let stderr = '';
     child.stdout.setEncoding('utf8');
@@ -100,7 +108,6 @@ function runCliOnTty(args, options = {}) {
 }
 
 test('cli: triage on a TTY prints the star prompt after the verdict', { skip: process.platform === 'win32' }, async (t) => {
-  if (spawnSync('which', ['script']).status !== 0) t.skip('no script binary for a pty');
   const scenario = {
     runs: [run(1, { conclusion: 'failure' })],
     jobs: { 1: [job(11, { name: 'build' })] },
@@ -109,6 +116,10 @@ test('cli: triage on a TTY prints the star prompt after the verdict', { skip: pr
   const mock = await startMockServer(scenario);
   try {
     const result = await runCliOnTty(['o/r'], { env: { ...process.env, CI_TRIAGE_API_BASE: mock.base } });
+    if (result === null) {
+      t.skip('no python3 for a pty');
+      return;
+    }
     assert.equal(result.status, 1);
     assert.match(result.stdout, /If this saved you time, star ci-triage: https:\/\/github\.com\/WJDdidi-1\/ci-triage/);
   } finally {

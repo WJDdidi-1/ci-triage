@@ -74,8 +74,15 @@ test('completion: every shell script names the completion command and every opti
   assert.equal(generateCompletion(''), null);
 });
 
-test('completion: bash and zsh scripts pass their shell syntax check', () => {
+test('completion: bash and zsh scripts pass their shell syntax check', (t) => {
   syntaxCheck('bash', 'bash');
+  // The Ubuntu and Windows CI runners ship no zsh (the shell is
+  // absent, not broken), so the zsh script is verified by the content
+  // assertions above when there is no shell to check it with.
+  if (spawnSync('zsh', ['--version']).status !== 0) {
+    t.skip('no zsh installed for a syntax check');
+    return;
+  }
   syntaxCheck('zsh', 'zsh');
   // No fish installed here, so the fish script is verified by the
   // content assertions above and by the CLI tests below.

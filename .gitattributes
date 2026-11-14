@@ -1,1 +1,4 @@
 * text=auto
+# The marketplace test compares the repo SKILL.md byte-for-byte with
+# the generator template (LF); a Windows checkout must not convert it.
+skills/*/SKILL.md text eol=lf
