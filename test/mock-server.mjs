@@ -65,7 +65,7 @@ export function startMockServer(scenario) {
 export function run(id, overrides = {}) {
   return {
     id,
-    number: overrides.number ?? id,
+    run_number: overrides.number ?? id,
     name: overrides.name ?? 'CI',
     workflow_id: overrides.workflow_id ?? 1,
     head_branch: overrides.branch ?? 'main',

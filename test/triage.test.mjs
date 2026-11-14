@@ -47,6 +47,25 @@ test('triage: same signature across runs clusters into one flaky cluster', async
   }
 });
 
+test('triage: progress lines show the real run number, never #undefined', async () => {
+  // Live dogfood (2026-11-14) found the progress lines printing
+  // "run #undefined": the mapper read run.number, but the real API
+  // field is run_number. The mock used to return `number` too, which
+  // hid the bug; it now returns run_number like the real API.
+  const mock = await startMockServer(flakyScenario);
+  try {
+    process.env.CI_TRIAGE_API_BASE = mock.base;
+    const lines = [];
+    await triageRepo('o/r', { runs: 10, onProgress: (line) => lines.push(line) });
+    assert.ok(lines.some((line) => line.includes('run #3:')));
+    assert.ok(lines.some((line) => line.includes('run #1:')));
+    assert.ok(!lines.some((line) => line.includes('#undefined')));
+  } finally {
+    delete process.env.CI_TRIAGE_API_BASE;
+    await mock.close();
+  }
+});
+
 test('triage: different signatures are different clusters, ranked by count', async () => {
   const scenario = {
     runs: [

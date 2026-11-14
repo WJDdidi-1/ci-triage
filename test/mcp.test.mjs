@@ -57,6 +57,19 @@ test('mcp: initialize, tools/list, ping', async () => {
     assert.deepEqual(ping.result, {});
     const list = await client.send({ method: 'tools/list' });
     assert.deepEqual(list.result.tools.map((t) => t.name), ['triage_repo', 'triage_log']);
+    // Tool annotations tell the client the call is safe: both tools
+    // only read (triage_repo reaches the GitHub API, triage_log is
+    // pure computation), so clients need not ask before calling.
+    const [repo, log] = list.result.tools;
+    assert.deepEqual(repo.annotations, { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true });
+    assert.deepEqual(log.annotations, { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false });
+    // Descriptions carry what + when + keywords (the spec rule): an
+    // agent decides whether to call a tool from its description, so
+    // each one states when to use it and what it matches on.
+    for (const tool of list.result.tools) {
+      assert.match(tool.description, /Use when /);
+      assert.match(tool.description, /Keywords: /);
+    }
   } finally {
     await client.stop();
   }
@@ -103,6 +116,36 @@ test('mcp: a malformed line gets a parse error and the server keeps going', asyn
     client.child.stdin.write('this is not json\n');
     const ping = await client.send({ method: 'ping' });
     assert.deepEqual(ping.result, {});
+  } finally {
+    await client.stop();
+  }
+});
+
+test('mcp: prompts/list and prompts/get serve the triage_ci workflow', async () => {
+  const client = startClient();
+  try {
+    const init = await client.send({ method: 'initialize', params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'test', version: '1' } } });
+    // initialize advertises the prompts capability, so a client that
+    // surfaces prompts knows to ask for them.
+    assert.deepEqual(init.result.capabilities, { tools: {}, prompts: {} });
+    const list = await client.send({ method: 'prompts/list' });
+    assert.deepEqual(list.result.prompts.map((prompt) => prompt.name), ['triage_ci']);
+    assert.deepEqual(list.result.prompts[0].arguments.map((arg) => arg.name), ['repo', 'workflow']);
+    assert.equal(list.result.prompts[0].arguments[0].required, true);
+    assert.equal(list.result.prompts[0].arguments[1].required, false);
+    const get = await client.send({ method: 'prompts/get', params: { name: 'triage_ci', arguments: { repo: 'WJDdidi-1/dev-doctor', workflow: 'ci.yml' } } });
+    assert.equal(get.result.messages[0].role, 'user');
+    const text = get.result.messages[0].content.text;
+    assert.match(text, /triage_repo/);
+    assert.match(text, /WJDdidi-1\/dev-doctor/);
+    assert.match(text, /ci\.yml/);
+    assert.match(text, /Do not re-run, retry, or fix anything without the user agreeing/);
+    const noRepo = await client.send({ method: 'prompts/get', params: { name: 'triage_ci', arguments: {} } });
+    assert.equal(noRepo.error.code, -32602);
+    assert.match(noRepo.error.message, /needs a repo/);
+    const unknown = await client.send({ method: 'prompts/get', params: { name: 'nope' } });
+    assert.equal(unknown.error.code, -32602);
+    assert.match(unknown.error.message, /unknown prompt: nope/);
   } finally {
     await client.stop();
   }

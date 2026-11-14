@@ -1,8 +1,9 @@
 # ci-triage as a GitHub Action.
 #
 # Runs `ci-triage` on a repo's recent failed runs and fails the job
-# when it finds root causes, so a triage report lands in the log
-# instead of a maintainer reading thousands of log lines by hand. It
+# when it finds root causes, so a triage report lands in the log and
+# the run's Step Summary instead of a maintainer reading thousands
+# of log lines by hand. It
 # runs the published npm package (@latest, so a repo using this action
 # always gets the newest triage), not the checkout: nothing in the
 # action needs the repo's own code.

@@ -1,0 +1,21 @@
+{
+  "metadata": {
+    "description": "Triage red CI before reading any log — group recent failed GitHub Actions runs by root cause.",
+    "version": "0.1.1"
+  },
+  "name": "ci-triage",
+  "owner": {
+    "name": "WJDdidi-1"
+  },
+  "plugins": [
+    {
+      "description": "Triage red CI before reading any log: group recent failed GitHub Actions runs by root cause, separate real regressions from flaky failures.",
+      "name": "ci-triage",
+      "skills": [
+        "./skills/ci-triage"
+      ],
+      "source": "./",
+      "strict": false
+    }
+  ]
+}

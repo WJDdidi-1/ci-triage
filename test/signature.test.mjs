@@ -30,6 +30,18 @@ test('signature: an empty log has no signature', () => {
   assert.equal(extractSignature('   \n  \n'), null);
 });
 
+test('signature: the location is the failing file and line, from the whole log', () => {
+  // tsc names the file on the error line itself.
+  assert.deepEqual(extractSignature(read('tsc-error.log')).location, { file: 'src/utils/format.ts', line: 18 });
+  // Jest names it in a stack frame several lines below the FAIL line,
+  // outside the 5-line evidence window — the scan must reach it.
+  assert.deepEqual(extractSignature(read('jest-failure.log')).location, { file: 'src/components/Button.test.tsx', line: 42 });
+  // Go reports a bare filename with no directory — no repo location.
+  assert.equal(extractSignature(read('go-test-failure.log')).location, null);
+  // No file:line anywhere — a timeout has no code location.
+  assert.equal(extractSignature(read('timeout.log')).location, null);
+});
+
 test('signature: the headline is a human-readable error line, not a hash', () => {
   const sig = extractSignature(read('tsc-error.log'));
   assert.ok(sig.headline.includes('TS2322'));
