@@ -107,6 +107,9 @@ test('completion: bash offers filenames, not options, after a value-taking optio
   // bash falls back to its default (filename) completion via
   // -o default.
   assert.deepEqual(bashComplete(['ci-triage', '--report', ''], 2), []);
+  // The known-failures flags take file paths too.
+  assert.deepEqual(bashComplete(['ci-triage', '--known', ''], 2), []);
+  assert.deepEqual(bashComplete(['ci-triage', '--write-known', ''], 2), []);
 });
 
 test('completion: CLI prints the script, and bad shells are usage errors', () => {

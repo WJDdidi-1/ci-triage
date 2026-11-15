@@ -1,9 +1,12 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { job, run, startMockServer } from './mock-server.mjs';
+import { tempDir } from '../scripts/support.mjs';
+import { loadKnownFailures, writeKnownFailures } from '../lib/known.mjs';
 import { triageLogText, triageRepo } from '../lib/triage.mjs';
 
 const fixtures = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures');
@@ -181,4 +184,152 @@ test('triageLogText: a pasted log classifies without the network', () => {
   assert.equal(out.flaky, false);
   assert.match(out.flakyReason, /needs run history/);
   assert.equal(triageLogText('').signature, null);
+});
+
+test('triage: a recorded cluster comes back marked known, not a new regression', async () => {
+  const scenario = {
+    runs: [
+      run(2, { conclusion: 'failure', headSha: 'bbb0000000000000000000000000000000000000', createdAt: '2026-11-12T14:03:15Z' }),
+      run(1, { conclusion: 'failure', headSha: 'aaa0000000000000000000000000000000000000', createdAt: '2026-11-12T10:00:00Z' }),
+    ],
+    jobs: {
+      2: [job(21, { name: 'build' })],
+      1: [job(11, { name: 'build' })],
+    },
+    logs: {
+      21: read('tsc-error.log'),
+      11: read('tsc-error.log'),
+    },
+  };
+  const mock = await startMockServer(scenario);
+  const dir = await tempDir('ci-triage-known-');
+  try {
+    process.env.CI_TRIAGE_API_BASE = mock.base;
+    const first = await triageRepo('o/r', { runs: 10 });
+    assert.equal(first.clusters.length, 1);
+    assert.equal(first.clusters[0].known, false);
+    assert.equal(first.knownFailures, null);
+    // Record it, then triage the same window again: the same
+    // signature is now a known failure, and nothing is "not seen".
+    const file = path.join(dir, '.ci-triage-known-failures.json');
+    const recorded = writeKnownFailures(file, first.clusters, { workflow: first.workflow });
+    assert.equal(recorded.added, 1);
+    const second = await triageRepo('o/r', {
+      runs: 10, known: loadKnownFailures(file), knownPath: file,
+    });
+    assert.equal(second.clusters.length, 1);
+    assert.equal(second.clusters[0].known, true);
+    assert.equal(second.knownFailures.entries, 1);
+    assert.deepEqual(second.knownFailures.notSeen, []);
+  } finally {
+    delete process.env.CI_TRIAGE_API_BASE;
+    await mock.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('triage: a recorded signature that stops appearing is listed as not seen', async () => {
+  const mock = await startMockServer({
+    runs: [run(1, { conclusion: 'success' })], jobs: {}, logs: {},
+  });
+  const dir = await tempDir('ci-triage-known-');
+  try {
+    process.env.CI_TRIAGE_API_BASE = mock.base;
+    const file = path.join(dir, '.ci-triage-known-failures.json');
+    writeKnownFailures(file, [{
+      id: '0123456789ab', headline: 'FAIL old test', category: 'test',
+      flaky: false, firstSeen: '2026-11-12T10:00:00Z',
+    }]);
+    const result = await triageRepo('o/r', {
+      runs: 10, known: loadKnownFailures(file), knownPath: file,
+    });
+    assert.equal(result.clusters.length, 0);
+    assert.equal(result.knownFailures.entries, 1);
+    assert.equal(result.knownFailures.notSeen.length, 1);
+    assert.equal(result.knownFailures.notSeen[0].signature, '0123456789ab');
+  } finally {
+    delete process.env.CI_TRIAGE_API_BASE;
+    await mock.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('triage: a real regression carries its green-to-red window', async () => {
+  // Run #1 green, runs #2 and #3 red with the same signature and no
+  // success in between: one real regression, and the window names
+  // the last green run and the first red one.
+  const scenario = {
+    runs: [
+      run(3, { conclusion: 'failure', headSha: 'bbb0000000000000000000000000000000000000', createdAt: '2026-11-12T14:03:15Z' }),
+      run(2, { conclusion: 'failure', headSha: 'aaa0000000000000000000000000000000000000', createdAt: '2026-11-12T10:00:00Z' }),
+      run(1, { conclusion: 'success', headSha: 'ccc0000000000000000000000000000000000000', createdAt: '2026-11-12T08:00:00Z' }),
+    ],
+    jobs: {
+      3: [job(31, { name: 'test' })],
+      2: [job(21, { name: 'test' })],
+    },
+    logs: {
+      31: read('jest-failure-run2.log'),
+      21: read('jest-failure.log'),
+    },
+  };
+  const mock = await startMockServer(scenario);
+  try {
+    process.env.CI_TRIAGE_API_BASE = mock.base;
+    const result = await triageRepo('o/r', { runs: 10 });
+    assert.equal(result.clusters.length, 1);
+    const [cluster] = result.clusters;
+    assert.equal(cluster.flaky, false);
+    assert.equal(cluster.regressionWindow.lastGreen.number, 1);
+    assert.equal(cluster.regressionWindow.lastGreen.headSha, 'ccc0000000000000000000000000000000000000');
+    assert.equal(cluster.regressionWindow.firstRed.number, 2);
+    assert.equal(cluster.regressionWindow.firstRed.headSha, 'aaa0000000000000000000000000000000000000');
+  } finally {
+    delete process.env.CI_TRIAGE_API_BASE;
+    await mock.close();
+  }
+});
+
+test('triage: a regression with no green run in the window leaves the green end open', async () => {
+  const scenario = {
+    runs: [
+      run(2, { conclusion: 'failure', headSha: 'bbb0000000000000000000000000000000000000', createdAt: '2026-11-12T14:03:15Z' }),
+      run(1, { conclusion: 'failure', headSha: 'aaa0000000000000000000000000000000000000', createdAt: '2026-11-12T10:00:00Z' }),
+    ],
+    jobs: {
+      2: [job(21, { name: 'test' })],
+      1: [job(11, { name: 'test' })],
+    },
+    logs: {
+      21: read('jest-failure-run2.log'),
+      11: read('jest-failure.log'),
+    },
+  };
+  const mock = await startMockServer(scenario);
+  try {
+    process.env.CI_TRIAGE_API_BASE = mock.base;
+    const result = await triageRepo('o/r', { runs: 10 });
+    assert.equal(result.clusters.length, 1);
+    const [cluster] = result.clusters;
+    assert.equal(cluster.flaky, false);
+    assert.equal(cluster.regressionWindow.lastGreen, null);
+    assert.equal(cluster.regressionWindow.firstRed.number, 1);
+  } finally {
+    delete process.env.CI_TRIAGE_API_BASE;
+    await mock.close();
+  }
+});
+
+test('triage: a flaky cluster carries no regression window', async () => {
+  const mock = await startMockServer(flakyScenario);
+  try {
+    process.env.CI_TRIAGE_API_BASE = mock.base;
+    const result = await triageRepo('o/r', { runs: 10 });
+    assert.equal(result.clusters.length, 1);
+    assert.equal(result.clusters[0].flaky, true);
+    assert.equal(result.clusters[0].regressionWindow, null);
+  } finally {
+    delete process.env.CI_TRIAGE_API_BASE;
+    await mock.close();
+  }
 });

@@ -481,3 +481,147 @@ test('cli: --annotations does not combine with --mcp or --skill-generate', async
   assert.match((await runCli(['o/r', '--annotations', '--skill-generate'])).stderr, /--skill-generate takes no other arguments/);
   assert.match((await runCli(['doctor', '--annotations'])).stderr, /doctor takes no options except --json/);
 });
+
+test('cli: --write-known records the clusters and exits 0, --known then reports KNOWN and exits 0', async () => {
+  const scenario = {
+    runs: [
+      run(2, { conclusion: 'failure', headSha: 'bbb0000000000000000000000000000000000000', createdAt: '2026-11-12T14:03:15Z' }),
+      run(1, { conclusion: 'failure', headSha: 'aaa0000000000000000000000000000000000000', createdAt: '2026-11-12T10:00:00Z' }),
+    ],
+    jobs: { 2: [job(21, { name: 'build' })], 1: [job(11, { name: 'build' })] },
+    logs: { 21: read('tsc-error.log'), 11: read('tsc-error.log') },
+  };
+  const mock = await startMockServer(scenario);
+  const dir = tempDir('ci-triage-known-cli-');
+  try {
+    const file = path.join(dir, '.ci-triage-known-failures.json');
+    const recorded = await runCli(['o/r', '--write-known', file], { env: { ...process.env, CI_TRIAGE_API_BASE: mock.base } });
+    assert.equal(recorded.status, 0);
+    assert.match(recorded.stdout, /Recorded 1 known failure in .* \(1 new\)/);
+    assert.equal(JSON.parse(readFileSync(file, 'utf8')).failures.length, 1);
+    // The same window, now with the record: the cluster is known,
+    // the verdict is KNOWN, and the gate passes.
+    const known = await runCli(['o/r', '--known', file], { env: { ...process.env, CI_TRIAGE_API_BASE: mock.base } });
+    assert.equal(known.status, 0);
+    assert.match(known.stdout, /Root causes: 1 \(0 real, 0 flaky, 1 known\)/);
+    assert.match(known.stdout, /build · 2 runs · known failure/);
+    assert.match(known.stdout, /Recorded as a known failure — not a new regression\./);
+    assert.match(known.stdout, /Overall: KNOWN — 1 known failure, no new regressions/);
+  } finally {
+    await mock.close();
+  }
+});
+
+test('cli: --known with a new signature still exits 1 and counts it as real', async () => {
+  const tscOnly = {
+    runs: [
+      run(2, { conclusion: 'failure', headSha: 'bbb0000000000000000000000000000000000000', createdAt: '2026-11-12T14:03:15Z' }),
+      run(1, { conclusion: 'failure', headSha: 'aaa0000000000000000000000000000000000000', createdAt: '2026-11-12T10:00:00Z' }),
+    ],
+    jobs: {
+      2: [job(21, { name: 'build' })],
+      1: [job(11, { name: 'build' })],
+    },
+    logs: {
+      21: read('tsc-error.log'),
+      11: read('tsc-error.log'),
+    },
+  };
+  const dir = tempDir('ci-triage-known-cli-');
+  const file = path.join(dir, '.ci-triage-known-failures.json');
+  // Record only the tsc cluster, against a mock that only has it.
+  const mockA = await startMockServer(tscOnly);
+  try {
+    const recorded = await runCli(['o/r', '--write-known', file], { env: { ...process.env, CI_TRIAGE_API_BASE: mockA.base } });
+    assert.equal(recorded.status, 0);
+  } finally {
+    await mockA.close();
+  }
+  // The full window adds a jest failure: 1 real, 1 known.
+  const full = {
+    runs: [
+      run(3, { conclusion: 'failure', headSha: 'ddd0000000000000000000000000000000000000', createdAt: '2026-11-12T16:00:00Z' }),
+      ...tscOnly.runs,
+    ],
+    jobs: {
+      3: [job(31, { name: 'test' })],
+      ...tscOnly.jobs,
+    },
+    logs: {
+      31: read('jest-failure.log'),
+      ...tscOnly.logs,
+    },
+  };
+  const mockB = await startMockServer(full);
+  try {
+    const result = await runCli(['o/r', '--known', file], { env: { ...process.env, CI_TRIAGE_API_BASE: mockB.base } });
+    assert.equal(result.status, 1);
+    assert.match(result.stdout, /Root causes: 2 \(1 real, 0 flaky, 1 known\)/);
+    assert.match(result.stdout, /Overall: 2 root causes — 1 real regression, 0 flaky, 1 known/);
+  } finally {
+    await mockB.close();
+  }
+});
+
+test('cli: --known and --write-known cannot be combined, and both need a value', async () => {
+  assert.match((await runCli(['o/r', '--known', 'k.json', '--write-known', 'k.json'])).stderr, /--known and --write-known cannot be combined/);
+  assert.equal((await runCli(['o/r', '--known'])).status, 2);
+  assert.match((await runCli(['o/r', '--known'])).stderr, /--known needs a value/);
+  assert.equal((await runCli(['o/r', '--write-known'])).status, 2);
+  assert.match((await runCli(['o/r', '--write-known'])).stderr, /--write-known needs a value/);
+  assert.match((await runCli(['o/r', '--known', 'k.json', '--mcp'])).stderr, /--mcp takes no other arguments/);
+  assert.match((await runCli(['doctor', '--known', 'k.json'])).stderr, /doctor takes no options except --json/);
+});
+
+test('cli: a missing --known file warns once and triages unsuppressed', async () => {
+  const scenario = {
+    runs: [run(1, { conclusion: 'failure' })],
+    jobs: { 1: [job(11, { name: 'build' })] },
+    logs: { 11: read('tsc-error.log') },
+  };
+  const mock = await startMockServer(scenario);
+  try {
+    const result = await runCli(['o/r', '--known', 'no-such-known.json'], { env: { ...process.env, CI_TRIAGE_API_BASE: mock.base } });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /Warning: known-failures file 'no-such-known\.json' not found/);
+    assert.match(result.stdout, /real regression/);
+    assert.doesNotMatch(result.stdout, /known failure/);
+  } finally {
+    await mock.close();
+  }
+});
+
+test('cli: a corrupt --known file fails loudly with exit 2', async () => {
+  const dir = tempDir('ci-triage-known-cli-');
+  const file = path.join(dir, 'bad.json');
+  fs.writeFileSync(file, '{not json', 'utf8');
+  const result = await runCli(['o/r', '--known', file]);
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /not valid JSON/);
+});
+
+test('cli: --known with --json carries knownFailures and the known flag', async () => {
+  const scenario = {
+    runs: [run(1, { conclusion: 'failure' })],
+    jobs: { 1: [job(11, { name: 'build' })] },
+    logs: { 11: read('tsc-error.log') },
+  };
+  const mock = await startMockServer(scenario);
+  const dir = tempDir('ci-triage-known-cli-');
+  try {
+    const file = path.join(dir, '.ci-triage-known-failures.json');
+    const recorded = await runCli(['o/r', '--json', '--write-known', file], { env: { ...process.env, CI_TRIAGE_API_BASE: mock.base } });
+    assert.equal(recorded.status, 0);
+    assert.match(recorded.stderr, /Recorded 1 known failure/);
+    const parsed = JSON.parse(recorded.stdout);
+    assert.equal(parsed.clusters.length, 1);
+    const known = await runCli(['o/r', '--json', '--known', file], { env: { ...process.env, CI_TRIAGE_API_BASE: mock.base } });
+    assert.equal(known.status, 0);
+    const parsedKnown = JSON.parse(known.stdout);
+    assert.equal(parsedKnown.clusters[0].known, true);
+    assert.equal(parsedKnown.knownFailures.entries, 1);
+    assert.deepEqual(parsedKnown.knownFailures.notSeen, []);
+  } finally {
+    await mock.close();
+  }
+});

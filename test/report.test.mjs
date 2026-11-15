@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
-import { formatAnnotations, formatReport, formatSummary, writeReportFile, writeStepSummary } from '../lib/report.mjs';
+import { formatAnnotations, formatReport, formatSummary, verdictLine, writeReportFile, writeStepSummary } from '../lib/report.mjs';
 import { tempDir } from '../scripts/support.mjs';
 
 const clustered = {
@@ -291,4 +291,146 @@ test('annotations: a node_modules frame is skipped in favour of a later real fil
     'at Object.<anonymous> (src/components/Button.test.tsx:42:18)',
   ]));
   assert.match(line, /^::error file=src\/components\/Button\.test\.tsx,line=42,title=/);
+});
+
+const knownOnly = {
+  ...clustered,
+  clusters: [
+    {
+      ...clustered.clusters[0],
+      known: true,
+    },
+  ],
+  failures: [
+    { signature: 'sig-a', logError: null },
+    { signature: 'sig-a', logError: null },
+  ],
+  knownFailures: {
+    file: '.ci-triage-known-failures.json',
+    loaded: true,
+    entries: 1,
+    notSeen: [],
+  },
+};
+
+test('report: a known cluster counts separately and says so in the block', () => {
+  const text = formatReport(knownOnly);
+  assert.match(text, /Root causes: 1 \(0 real, 0 flaky, 1 known\)/);
+  assert.match(text, /^#1  test · 2 runs · known failure$/m);
+  assert.match(text, /Recorded as a known failure — not a new regression\./);
+  const md = formatSummary(knownOnly);
+  assert.match(md, /\*\*Root causes: 1 \(0 real, 0 flaky, 1 known\)\*\*/);
+  assert.match(md, /^### #1 test · 2 runs · known failure$/m);
+  assert.match(md, /Recorded as a known failure — not a new regression\./);
+});
+
+test('report: a flaky cluster recorded as known counts as known, not flaky', () => {
+  const both = {
+    ...clustered,
+    clusters: [{ ...clustered.clusters[1], known: true }],
+    failures: [{ signature: 'sig-b', logError: null }],
+  };
+  assert.match(formatReport(both), /Root causes: 1 \(0 real, 0 flaky, 1 known\)/);
+});
+
+test('report: known failures not seen in the window are listed as possibly fixed', () => {
+  const withNotSeen = {
+    ...knownOnly,
+    knownFailures: {
+      file: '.ci-triage-known-failures.json',
+      loaded: true,
+      entries: 2,
+      notSeen: [{ signature: '0123456789ab', headline: 'FAIL old test', workflow: 'CI' }],
+    },
+  };
+  const text = formatReport(withNotSeen);
+  assert.match(text, /Known failures not seen in this window \(possibly fixed — remove them from \.ci-triage-known-failures\.json if so\):/);
+  assert.match(text, /0123456789ab — FAIL old test/);
+  const md = formatSummary(withNotSeen);
+  assert.match(md, /Known failures not seen in this window/);
+  assert.match(md, /- 0123456789ab — FAIL old test/);
+  // No notSeen section when everything recorded was seen.
+  assert.doesNotMatch(formatReport(knownOnly), /not seen in this window/);
+});
+
+test('report: verdict is KNOWN only when every failure is a known one', () => {
+  assert.equal(verdictLine(knownOnly), 'Overall: KNOWN — 1 known failure, no new regressions');
+  // A mixed window still reports the real regressions.
+  const mixed = { ...clustered, clusters: [{ ...clustered.clusters[0], known: true }, clustered.clusters[1]] };
+  assert.equal(verdictLine(mixed), 'Overall: 2 root causes — 0 real regressions, 1 flaky, 1 known');
+  // An unreadable log cannot be matched to the known file, so the
+  // verdict is not KNOWN even when every cluster is known.
+  const unreadable = { ...knownOnly, failures: [...knownOnly.failures, { signature: null, logError: 'log expired' }] };
+  assert.doesNotMatch(verdictLine(unreadable), /KNOWN/);
+  assert.match(verdictLine(unreadable), /1 known/);
+});
+
+test('annotations: a known cluster is ::warning::, never ::error::', () => {
+  const lines = formatAnnotations(knownOnly).split('\n');
+  assert.equal(lines.length, 1);
+  assert.match(lines[0], /^::warning title=ci-triage acme\/widgets — #1 test · 2 runs · known failure/);
+  assert.match(lines[0], /Recorded as a known failure — not a new regression\./);
+});
+
+const windowed = {
+  ...clustered,
+  clusters: [
+    {
+      ...clustered.clusters[0],
+      regressionWindow: {
+        lastGreen: { number: 1, headSha: 'ccc0000000000000000000000000000000000000', createdAt: '2026-11-12T08:00:00Z' },
+        firstRed: { number: 2, headSha: 'aaa0000000000000000000000000000000000000', createdAt: '2026-11-12T10:00:00Z' },
+      },
+    },
+  ],
+  failures: [
+    { signature: 'sig-a', logError: null },
+    { signature: 'sig-a', logError: null },
+  ],
+};
+
+test('report: a real regression names its green-to-red window with the git log command', () => {
+  const text = formatReport(windowed);
+  assert.match(text, /broke between #1 \(ccc0000\) and #2 \(aaa0000\) — git log ccc0000\.\.aaa0000 lists the suspect commits/);
+  const md = formatSummary(windowed);
+  assert.match(md, /broke between #1 \(ccc0000\) and #2 \(aaa0000\) — git log ccc0000\.\.aaa0000 lists the suspect commits/);
+  const line = formatAnnotations(windowed);
+  assert.match(line, /Broke between #1 \(ccc0000\) and #2 \(aaa0000\)\./);
+});
+
+test('report: a regression with no green run in the window says so instead of pretending it is closed', () => {
+  const open = {
+    ...windowed,
+    clusters: [
+      {
+        ...windowed.clusters[0],
+        regressionWindow: {
+          lastGreen: null,
+          firstRed: { number: 1, headSha: 'aaa0000000000000000000000000000000000000', createdAt: '2026-11-12T10:00:00Z' },
+        },
+      },
+    ],
+  };
+  assert.match(formatReport(open), /no passing run before the first failure in this window — the regression predates the runs listed/);
+  assert.match(formatSummary(open), /no passing run before the first failure in this window — the regression predates the runs listed/);
+  // The open window is a report line, not an annotation: the
+  // annotation already carries the headline and the runs.
+  assert.doesNotMatch(formatAnnotations(open), /no passing run/);
+});
+
+test('report: a flaky cluster never shows a window line, even if one is attached', () => {
+  const flakyWindowed = {
+    ...windowed,
+    clusters: [
+      {
+        ...windowed.clusters[0],
+        flaky: true,
+        flakyReason: 'fails intermittently while the same workflow passes in between',
+        regressionWindow: windowed.clusters[0].regressionWindow,
+      },
+    ],
+  };
+  assert.doesNotMatch(formatReport(flakyWindowed), /broke between/);
+  assert.doesNotMatch(formatSummary(flakyWindowed), /broke between/);
+  assert.doesNotMatch(formatAnnotations(flakyWindowed), /Broke between/);
 });

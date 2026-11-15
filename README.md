@@ -56,7 +56,18 @@ ci-triage acme/widgets --annotations  # also emit ::error:: / ::warning:: annota
 
 `--report` writes the same Markdown the GitHub Action puts in the Step Summary — the ranked report, not machine JSON — so the file, the summary, and the terminal output never disagree. Under `--json` the confirmation goes to stderr, so stdout stays parseable. `--annotations` does the same job for the run's annotations panel: one workflow-command line per root cause (`::error::` for a real regression, `::warning::` for flaky or unknown), capped at 10 per level — GitHub's own limit. When the log names the failing file with a line (`src/utils/format.ts:18:7`, a Jest stack frame), the annotation is pinned to that file and line, so it also shows in the PR's changed-files view, one click from the code; a bare filename, an absolute runner path, or a `node_modules` frame stays unpinned rather than pointing at the wrong file. Under `--json` the lines go to stderr, so stdout stays parseable.
 
-Exit codes: `0` when no failed job turned up, `1` when failures were found (including failures whose logs could not be read — the repo is not clean), `2` for a usage error or an API error.
+Exit codes: `0` when no failed job turned up, or when every failure in the window is a recorded known failure; `1` when failures were found (including failures whose logs could not be read — the repo is not clean), `2` for a usage error or an API error.
+
+## Known failures
+
+A failure the team already knows about and is living with should not re-alert as a real regression on every triage — it drowns the new regressions. Record it once, then triage against the record:
+
+```sh
+ci-triage acme/widgets --write-known .ci-triage-known-failures.json
+ci-triage acme/widgets --known .ci-triage-known-failures.json
+```
+
+`--write-known` records the current clusters and merges with entries already in the file; `--known` marks the clusters the file covers as known failures instead of new regressions. Matching is by failure signature, so a known failure stays known when it moves to another workflow. The file holds signature hashes and headlines only, so it is safe to commit. A recorded failure that stops appearing is listed as "not seen in this window (possibly fixed)" — remove it from the file if it is fixed. The method is Playwright's `test.fail()`: a known bug that is still exercised, expected to fail, and noticed when it stops failing. In the Action, a triage with only known failures passes the step instead of failing it.
 
 Shell completion for bash, zsh and fish: `ci-triage completion bash` prints a completion script generated from the same option list the CLI parses, so it can never suggest a flag the CLI rejects. Install it with, e.g. `ci-triage completion bash > ~/.bash_completion.d/ci-triage`, or `source <(ci-triage completion bash)` for a one-off session. Mistyped a flag anyway? The CLI suggests the closest match (`Did you mean ...?`) instead of a bare error.
 
@@ -80,6 +91,8 @@ With a token you get 5,000 API requests per hour. `gh auth login` works too when
 - **Clustering:** failures with the same signature are one root cause, ranked by how many runs they hit.
 - **Classification:** each cluster is a test failure, a build failure, or an infra failure (timeouts and the like), from the error lines themselves.
 - **Flaky vs real:** a cluster is flaky when the same commit passed on a later run, or when failures and successes alternate in the window. Failing on every recent run is a real regression.
+- **Known failures:** a cluster whose signature is recorded in a known-failures file (`--known`) is reported as a known failure, not a new regression. A triage with only known failures exits 0.
+- **Regression window:** a real regression names the last green run and the first red one ("broke between #1 (ccc0000) and #2 (aaa0000)"); `git log <green>..<red>` lists the suspect commits. The method is git bisect's — the good and bad endpoints — answered from the run history instead of a binary search, since CI already ran every commit's build. A flaky failure has no window; when no passing run precedes the first failure, the report says the regression predates the runs listed.
 
 Logs expire: GitHub keeps job logs for 90 days. A failed job whose log is gone is recorded, not fatal.
 
@@ -90,9 +103,9 @@ ci-triage --mcp               # stdio MCP server: triage_repo, triage_log
 ci-triage --skill-generate    # write a SKILL.md for this project (never overwrites) and a short section in AGENTS.md
 ```
 
-`triage_log` classifies a pasted log without touching the network — useful when you already have the log open.
+`triage_log` classifies a pasted log without touching the network — useful when you already have the log open. Both tools return the same JSON the CLI's `--json` produces, as the text block and again as `structuredContent`, the MCP structured-output channel (each tool declares a loose `outputSchema: { type: 'object' }`; error results carry none), so a calling application can read the fields typed instead of parsing the text.
 
-The MCP server also serves one prompt, `triage_ci` (`prompts/list` / `prompts/get`): the one-shot "what broke in CI and what do I fix first?" workflow — call `triage_repo` with the repo (and workflow, if given), report the root causes ranked real regressions first, then flaky, then unknown, and do not re-run or fix anything without the user agreeing — for MCP clients that let the user pick a prompt instead of typing a request. The method is FastMCP's: prompts are the third MCP primitive, the user-invoked template next to tools and resources.
+The MCP server also serves one prompt, `triage_ci` (`prompts/list` / `prompts/get`): the one-shot "what broke in CI and what do I fix first?" workflow — call `triage_repo` with the repo (and workflow, if given), report the root causes ranked real regressions first, then flaky, then unknown, then known failures, and do not re-run or fix anything without the user agreeing — for MCP clients that let the user pick a prompt instead of typing a request. The method is FastMCP's: prompts are the third MCP primitive, the user-invoked template next to tools and resources. `triage_repo` also takes `knownFile`: a known-failures file to mark recorded clusters as known instead of new regressions.
 
 Claude Code users can install the skill without installing the CLI first: `/plugin marketplace add WJDdidi-1/ci-triage`, then `/plugin install ci-triage@ci-triage`. The skill lives in this repo at `skills/ci-triage/SKILL.md`, so skill indexes can find it too.
 
@@ -111,11 +124,20 @@ jobs:
           runs: 10
 ```
 
-The action fails the job when it finds root causes, so the triage report lands in the log and in the run's Step Summary. Add `--annotations` to surface each root cause on the run's annotations panel too — one `::error::` per real regression, `::warning::` for flaky or unknown — so the cause is visible without opening the log at all. It needs no token and no file, and it works on fork PRs, where the Checks API cannot write; the same trick reviewdog's `github-annotations` reporter uses. Locally it is a no-op: the lines only become annotations when a step runs in GitHub Actions.
+The action fails the job when it finds root causes, so the triage report lands in the log and in the run's Step Summary. Add `--annotations` to surface each root cause on the run's annotations panel too — one `::error::` per real regression, `::warning::` for flaky, unknown, or known — so the cause is visible without opening the log at all. It needs no token and no file, and it works on fork PRs, where the Checks API cannot write; the same trick reviewdog's `github-annotations` reporter uses. Locally it is a no-op: the lines only become annotations when a step runs in GitHub Actions.
 
 ## How fast is it
 
 On a real repo with 3 failed runs and 9 failed jobs, the triage took about 8 seconds wall-clock — against opening 9 job logs by hand and reading them. The clustering and classification themselves run in milliseconds; the time is the GitHub API round-trips.
+
+## Development
+
+```sh
+npm test            # node:test, no extra dependencies — 184 tests, run serially
+node scripts/bump-version.mjs <version>  # bump every version pin at once
+```
+
+Releases bump the version with `node scripts/bump-version.mjs <version>`: it moves every version pin at once — package.json, package-lock.json, server.json and the marketplace metadata — renames the CHANGELOG's `## Unreleased` heading, and refuses a drifted tree before writing anything. The method is semantic-release's (one mechanical writer of version strings), without adopting semantic-release itself. The script is shared with dev-diagnosis: files a repo does not have (pre-commit manifest, demo tape) are skipped.
 
 ## Troubleshooting
 

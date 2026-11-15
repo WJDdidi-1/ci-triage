@@ -13,7 +13,8 @@
  * or `gh auth` when logged in); public repos work unauthenticated
  * at 60 GitHub API requests/hour.
  *
- * Exit codes: 0 = no failures in the window (clean); 1 = failures
+ * Exit codes: 0 = no failures in the window (clean), or the only
+ * failures are recorded known failures (see --known); 1 = failures
  * found (the normal case when CI is red — the report is the answer);
  * 2 = usage error or the triage could not run (API error, no
  * network, bad repo name).
@@ -27,6 +28,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { ApiError, UsageError } from '../lib/errors.mjs';
 import { parseRepo } from '../lib/github.mjs';
+import { KnownError, loadKnownFailures, writeKnownFailures } from '../lib/known.mjs';
 import { runMcpServer } from '../lib/mcp.mjs';
 import { runDoctor } from '../lib/doctor.mjs';
 import { generateCompletion, knownOptions } from '../lib/completion.mjs';
@@ -41,7 +43,7 @@ const VERSION = JSON.parse(
 const USAGE = `ci-triage: what's broken, what matters, what's flaky — for your repo's CI.
 
 Usage:
-  ci-triage <owner/repo> [--runs N] [--workflow <name>] [--branch <name>] [--json] [--top N] [--report <file>] [--annotations]
+  ci-triage <owner/repo> [--runs N] [--workflow <name>] [--branch <name>] [--json] [--top N] [--report <file>] [--annotations] [--known <file>] [--write-known <file>]
   ci-triage doctor [--json]
   ci-triage completion <bash|zsh|fish>
   ci-triage --mcp
@@ -77,6 +79,23 @@ Options:
                 cannot write. A no-op locally: the lines only become
                 annotations when a step runs in GitHub Actions.
                 Goes to stderr under --json so stdout stays parseable.
+  --known <file>
+                read a known-failures file (see --write-known) and
+                mark the clusters it already covers as known
+                failures instead of new regressions — Playwright's
+                test.fail() for triage: a failure the team knows
+                about and is living with. A missing file warns once
+                and triages unsuppressed; a corrupt file fails
+                loudly. When every failure in the window is known,
+                the verdict is KNOWN and the exit code is 0.
+  --write-known <file>
+                record this triage's clusters as known failures in
+                the file (merging with entries already there),
+                instead of judging them — print what was recorded
+                and exit 0. Cannot be combined with --known: one
+                reads a known-failures file, the other writes one.
+                The file holds signature hashes and headlines only,
+                so it is safe to commit.
   --mcp         serve the triage as an MCP server on stdio
   --skill-generate
                 write a Claude Agent Skills SKILL.md for ci-triage:
@@ -111,7 +130,8 @@ wiring (a missing skill, no token, an unreachable API); only
 failures make it exit 1. --json for machines. The method is
 Claude Code's 'claude doctor'.
 
-Exit codes: 0 = no failures in the window; 1 = failures found;
+Exit codes: 0 = no failures in the window, or the only failures are
+recorded known failures; 1 = failures found;
 2 = usage error or the triage could not run.
 `;
 
@@ -165,7 +185,7 @@ function parseArgs(argv) {
     repo: null, positional: [], json: false, help: false, version: false,
     runs: null, workflow: null, branch: null, top: null, error: null,
     mcp: false, skillGenerate: false, skillGlobal: false, skillProject: false,
-    report: null, annotations: false,
+    report: null, annotations: false, known: null, writeKnown: null,
   };
   let i = 0;
   while (i < argv.length) {
@@ -214,7 +234,23 @@ function parseArgs(argv) {
       if (!value) parsed.error = '--report needs a value';
       else parsed.report = value;
     } else if (arg === '--annotations') parsed.annotations = true;
-    else if (arg.startsWith('-')) {
+    else if (arg === '--known') {
+      parsed.known = argv[i + 1];
+      if (parsed.known === undefined) parsed.error = '--known needs a value';
+      i += 1;
+    } else if (arg.startsWith('--known=')) {
+      const value = arg.slice('--known='.length);
+      if (!value) parsed.error = '--known needs a value';
+      else parsed.known = value;
+    } else if (arg === '--write-known') {
+      parsed.writeKnown = argv[i + 1];
+      if (parsed.writeKnown === undefined) parsed.error = '--write-known needs a value';
+      i += 1;
+    } else if (arg.startsWith('--write-known=')) {
+      const value = arg.slice('--write-known='.length);
+      if (!value) parsed.error = '--write-known needs a value';
+      else parsed.writeKnown = value;
+    } else if (arg.startsWith('-')) {
       // Suggest the option the user almost certainly meant
       // (--hepl -> --help); the part after '=' is a value, not part
       // of the name.
@@ -231,7 +267,7 @@ async function runDoctorCommand(args) {
   // Doctor takes no options except --json: the rest belong to the
   // triage, not to the checkup.
   if (args.runs != null || args.workflow || args.branch || args.top != null || args.report
-    || args.annotations || args.skillGlobal || args.skillProject || args.positional.length > 0) {
+    || args.annotations || args.skillGlobal || args.skillProject || args.known || args.writeKnown || args.positional.length > 0) {
     console.error('Error: doctor takes no options except --json.');
     console.error('Run with --help to see the available options.');
     return 2;
@@ -299,7 +335,7 @@ async function main(argv) {
     return 2;
   }
   if (args.mcp) {
-    if (args.repo || args.json || args.runs != null || args.workflow || args.branch || args.top != null || args.report || args.annotations) {
+    if (args.repo || args.json || args.runs != null || args.workflow || args.branch || args.top != null || args.report || args.annotations || args.known || args.writeKnown) {
       console.error('Error: --mcp takes no other arguments.');
       console.error('Run with --help to see the available options.');
       return 2;
@@ -313,7 +349,7 @@ async function main(argv) {
       console.error('Run with --help to see the available options.');
       return 2;
     }
-    if (args.repo || args.json || args.runs != null || args.workflow || args.branch || args.top != null || args.report || args.annotations) {
+    if (args.repo || args.json || args.runs != null || args.workflow || args.branch || args.top != null || args.report || args.annotations || args.known || args.writeKnown) {
       console.error('Error: --skill-generate takes no other arguments.');
       console.error('Run with --help to see the available options.');
       return 2;
@@ -345,6 +381,11 @@ async function main(argv) {
   if (args.repo === 'completion') {
     return runCompletion(args.positional);
   }
+  if (args.known && args.writeKnown) {
+    console.error('Error: --known and --write-known cannot be combined: one reads a known-failures file, the other writes one.');
+    console.error('Run with --help to see the available options.');
+    return 2;
+  }
   if (!args.repo) {
     console.error('Error: a repository is required: ci-triage <owner/repo>');
     console.error('Run with --help to see the available options.');
@@ -362,11 +403,34 @@ async function main(argv) {
     console.error('Run with --help to see the available options.');
     return 2;
   }
+  // A requested known-failures file that does not exist yet: warn
+  // once on stderr (never stdout, so --json stays parseable) and let
+  // the triage stand unsuppressed — the user is usually one
+  // `--write-known` away from having one. A corrupt file fails
+  // loudly instead: silently ignoring it would re-alert on every
+  // known failure.
+  let known = null;
+  if (args.known) {
+    try {
+      known = loadKnownFailures(args.known);
+    } catch (error) {
+      if (error instanceof KnownError) {
+        console.error(`Error: ${error.message}`);
+        return 2;
+      }
+      throw error;
+    }
+    if (known === null) {
+      console.error(`Warning: known-failures file '${args.known}' not found — failures checked without suppression.`);
+    }
+  }
   try {
     const result = await triageRepo(args.repo, {
       runs: args.runs ?? undefined,
       workflow: args.workflow,
       branch: args.branch,
+      known,
+      knownPath: args.known || null,
       onProgress: (line) => { if (!args.json) console.error(line); },
     });
     if (args.json) {
@@ -405,10 +469,39 @@ async function main(argv) {
         else console.log(annotations);
       }
     }
+    // --write-known records instead of judging: the file gets the
+    // current clusters (merged with what it already holds) and the
+    // run exits 0 — the user asked to record, not to be told the
+    // repo is red. A write failure is a usage error, not a verdict.
+    if (args.writeKnown) {
+      let recorded;
+      try {
+        recorded = writeKnownFailures(args.writeKnown, result.clusters, { workflow: result.workflow });
+      } catch (error) {
+        if (error instanceof KnownError) {
+          console.error(`Error: ${error.message}`);
+          return 2;
+        }
+        throw error;
+      }
+      const unreadable = result.failures.filter((f) => f.signature == null).length;
+      const line = `Recorded ${recorded.count} known failure${recorded.count === 1 ? '' : 's'} in ${recorded.path} (${recorded.added} new)`
+        + (unreadable > 0 ? ` — ${unreadable} failed job${unreadable > 1 ? 's' : ''} had no readable log and ${unreadable > 1 ? 'were' : 'was'} not recorded` : '');
+      if (args.json) console.error(line);
+      else console.log(line);
+      return 0;
+    }
     // 1 when failures were found — even when their logs could not
     // be read, because the repo is not clean; 0 only when no failed
-    // job turned up at all.
-    return result.clusters.length === 0 && result.failures.length === 0 ? 0 : 1;
+    // job turned up at all, or when every failure in the window is
+    // a recorded known failure (Playwright's test.fail() semantics:
+    // an expected failure does not fail the suite). An unreadable
+    // log cannot be matched to the known file, so it still fails.
+    if (result.clusters.length === 0 && result.failures.length === 0) return 0;
+    if (result.clusters.length > 0
+      && result.clusters.every((c) => c.known)
+      && result.failures.every((f) => f.signature != null)) return 0;
+    return 1;
   } catch (error) {
     if (error instanceof UsageError || error instanceof ApiError) {
       console.error(`Error: ${error.message}`);

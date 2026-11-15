@@ -1,5 +1,67 @@
 # Changelog
 
+## 0.1.2 — 2026-11-15
+
+- New: MCP structured output — both tools now declare a loose
+  `outputSchema: { type: 'object' }` in `tools/list`, and a successful
+  `tools/call` returns the same object as `structuredContent`
+  alongside the unchanged text block, so a calling application (the
+  MCP Inspector's Structured Output panel, a host that routes on
+  fields) can read the result typed instead of parsing the text.
+  Error results carry no `structuredContent`. The schema stays loose
+  on purpose: the payloads are dynamic nested objects, and the
+  Inspector validates `structuredContent` against `outputSchema`
+  with AJV, so a detailed schema would warn on any property it does
+  not list. The declared protocol version stays `2024-11-05`: the
+  fields are additive and older clients ignore them, the same
+  precedent as annotations. The method is the MCP Inspector's
+  (11,297 stars) structured-output panel.
+- New: regression window — a real regression now names the last
+  green run and the first red one ("broke between #1 (ccc0000) and
+  #2 (aaa0000) — git log ccc0000..aaa0000 lists the suspect
+  commits"), in the terminal report, the Markdown report, `--json`
+  and the `--annotations` message. The method is git bisect's — the
+  good and bad endpoints — answered from the run history instead of
+  a binary search, since CI already ran every commit's build. A
+  flaky failure has no window (passes and failures interleave, so
+  no single boundary exists); when no passing run precedes the
+  first failure, the report says the regression predates the runs
+  listed instead of pretending the window is closed.
+- New: known failures — `--write-known <file>` records the current
+  clusters as known failures (signature hashes and headlines only,
+  merged with entries already in the file, safe to commit) and
+  `--known <file>` marks the clusters it covers as known failures
+  instead of new regressions, so a failure the team is living with
+  stops re-alerting on every triage. A triage with only known
+  failures reports `Overall: KNOWN` and exits 0; a recorded failure
+  that stops appearing is listed as "not seen in this window
+  (possibly fixed)". The method is Playwright's `test.fail()` — a
+  known bug still exercised, expected to fail, and noticed when it
+  stops failing — with the signature-fingerprint baseline shape from
+  dev-diagnosis's secrets baseline. Also on the MCP `triage_repo`
+  tool (`knownFile`), the `triage_ci` prompt, the skill, and shell
+  completion.
+
+- New: one-command version bumps — `node scripts/bump-version.mjs
+  <version>` moves every version pin at once (package.json,
+  package-lock.json, server.json, the marketplace metadata), renames
+  the CHANGELOG's `## Unreleased` heading to the new version, and
+  refuses a drifted tree before writing anything instead of
+  half-bumping it. The method is semantic-release's (one mechanical
+  writer of version strings), without adopting semantic-release
+  itself. The script is shared with dev-diagnosis: files a repo does
+  not have (pre-commit manifest, demo tape) are skipped.
+
+## 0.1.1 — 2026-11-14
+  <version>` moves every version pin at once (package.json,
+  package-lock.json, server.json, the marketplace metadata), renames
+  the CHANGELOG's `## Unreleased` heading to the new version, and
+  refuses a drifted tree before writing anything instead of
+  half-bumping it. The method is semantic-release's (one mechanical
+  writer of version strings), without adopting semantic-release
+  itself. The script is shared with dev-diagnosis: files a repo does
+  not have (pre-commit manifest, demo tape) are skipped.
+
 ## 0.1.1 — 2026-11-14
 
 - Fix: the CI matrix went red on the first 0.1.1 push (0/12 jobs) and

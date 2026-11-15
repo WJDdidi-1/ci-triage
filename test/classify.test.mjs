@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { classifyCluster, detectFlaky } from '../lib/classify.mjs';
+import { classifyCluster, detectFlaky, findRegressionWindow } from '../lib/classify.mjs';
 import { extractSignature } from '../lib/signature.mjs';
 
 const fixtures = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures');
@@ -92,4 +92,89 @@ test('flaky: failing on every recent run is a real regression, not flaky', () =>
   const { flaky, reason } = detectFlaky(cluster, history);
   assert.equal(flaky, false);
   assert.match(reason, /real regression/);
+});
+
+test('window: green then red bounds the regression to two commits', () => {
+  const cluster = {
+    flaky: false,
+    runs: [
+      { number: 3, headSha: 'bbb0000000000000000000000000000000000000', createdAt: '2026-11-12T14:00:00Z' },
+      { number: 2, headSha: 'aaa0000000000000000000000000000000000000', createdAt: '2026-11-12T10:00:00Z' },
+    ],
+  };
+  const history = [
+    { number: 3, conclusion: 'failure', headSha: 'bbb0000000000000000000000000000000000000', createdAt: '2026-11-12T14:00:00Z' },
+    { number: 2, conclusion: 'failure', headSha: 'aaa0000000000000000000000000000000000000', createdAt: '2026-11-12T10:00:00Z' },
+    { number: 1, conclusion: 'success', headSha: 'ccc0000000000000000000000000000000000000', createdAt: '2026-11-12T08:00:00Z' },
+  ];
+  const window = findRegressionWindow(cluster, history);
+  assert.equal(window.lastGreen.number, 1);
+  assert.equal(window.lastGreen.headSha, 'ccc0000000000000000000000000000000000000');
+  assert.equal(window.firstRed.number, 2);
+  assert.equal(window.firstRed.headSha, 'aaa0000000000000000000000000000000000000');
+});
+
+test('window: a success between the first and second failure does not move the boundary', () => {
+  // The boundary is the FIRST failure: a green run after it cannot
+  // be the good endpoint, however recent it is.
+  const cluster = {
+    flaky: false,
+    runs: [
+      { number: 3, headSha: 'bbb0000000000000000000000000000000000000', createdAt: '2026-11-12T14:00:00Z' },
+      { number: 2, headSha: 'aaa0000000000000000000000000000000000000', createdAt: '2026-11-12T10:00:00Z' },
+    ],
+  };
+  const history = [
+    { number: 3, conclusion: 'failure', headSha: 'bbb0000000000000000000000000000000000000', createdAt: '2026-11-12T14:00:00Z' },
+    { number: 2, conclusion: 'success', headSha: 'ddd0000000000000000000000000000000000000', createdAt: '2026-11-12T12:00:00Z' },
+    { number: 1, conclusion: 'failure', headSha: 'aaa0000000000000000000000000000000000000', createdAt: '2026-11-12T10:00:00Z' },
+  ];
+  const window = findRegressionWindow(cluster, history);
+  assert.equal(window.lastGreen, null);
+  assert.equal(window.firstRed.number, 2);
+});
+
+test('window: no passing run before the first failure leaves the green end open', () => {
+  const cluster = {
+    flaky: false,
+    runs: [
+      { number: 2, headSha: 'aaa0000000000000000000000000000000000000', createdAt: '2026-11-12T10:00:00Z' },
+    ],
+  };
+  const history = [
+    { number: 2, conclusion: 'failure', headSha: 'aaa0000000000000000000000000000000000000', createdAt: '2026-11-12T10:00:00Z' },
+    { number: 1, conclusion: 'failure', headSha: 'eee0000000000000000000000000000000000000', createdAt: '2026-11-12T08:00:00Z' },
+  ];
+  const window = findRegressionWindow(cluster, history);
+  assert.equal(window.lastGreen, null);
+  assert.equal(window.firstRed.headSha, 'aaa0000000000000000000000000000000000000');
+});
+
+test('window: a success at exactly the first failure time does not count as preceding it', () => {
+  const cluster = {
+    flaky: false,
+    runs: [
+      { number: 2, headSha: 'aaa0000000000000000000000000000000000000', createdAt: '2026-11-12T10:00:00Z' },
+    ],
+  };
+  const history = [
+    { number: 2, conclusion: 'failure', headSha: 'aaa0000000000000000000000000000000000000', createdAt: '2026-11-12T10:00:00Z' },
+    { number: 1, conclusion: 'success', headSha: 'ccc0000000000000000000000000000000000000', createdAt: '2026-11-12T10:00:00Z' },
+  ];
+  const window = findRegressionWindow(cluster, history);
+  assert.equal(window.lastGreen, null);
+});
+
+test('window: a flaky cluster has no single boundary', () => {
+  const cluster = {
+    flaky: true,
+    runs: [
+      { number: 2, headSha: 'aaa0000000000000000000000000000000000000', createdAt: '2026-11-12T10:00:00Z' },
+    ],
+  };
+  const history = [
+    { number: 2, conclusion: 'failure', headSha: 'aaa0000000000000000000000000000000000000', createdAt: '2026-11-12T10:00:00Z' },
+    { number: 1, conclusion: 'success', headSha: 'ccc0000000000000000000000000000000000000', createdAt: '2026-11-12T08:00:00Z' },
+  ];
+  assert.equal(findRegressionWindow(cluster, history), null);
 });

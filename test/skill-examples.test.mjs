@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import fs from 'node:fs';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { job, run, startMockServer } from './mock-server.mjs';
+import { tempDir } from '../scripts/support.mjs';
 import { SKILL_MD } from '../lib/skill.mjs';
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -87,10 +89,16 @@ const EXAMPLE_2_LINES = [
   "src/utils/format.ts:18:7 - error TS2322: Type 'string' is not assignable to type 'number'.",
   'Overall: 1 root cause — 1 real regression, 0 flaky',
 ];
+const EXAMPLE_3_LINES = [
+  'Root causes: 1 (0 real, 0 flaky, 1 known)',
+  '#1  build · 2 runs · known failure',
+  'Recorded as a known failure — not a new regression.',
+  'Overall: KNOWN — 1 known failure, no new regressions',
+];
 
 test('skill-examples: SKILL.md has an Examples section quoting the real output', () => {
   assert.match(SKILL_MD, /^## Examples$/m);
-  for (const line of [...EXAMPLE_1_LINES, ...EXAMPLE_2_LINES]) {
+  for (const line of [...EXAMPLE_1_LINES, ...EXAMPLE_2_LINES, ...EXAMPLE_3_LINES]) {
     assert.ok(SKILL_MD.includes(line), `SKILL.md quotes "${line}"`);
   }
   // The Rules carry their why, not bare commands (skill-creator:
@@ -119,5 +127,23 @@ test('skill-examples: example 2 — the real-regression scenario produces the qu
     }
   } finally {
     await mock.close();
+  }
+});
+
+test('skill-examples: example 3 — recording the regression, then triaging with --known, produces the quoted lines', async () => {
+  const mock = await startMockServer(regressionScenario);
+  const dir = tempDir('ci-triage-skill-known-');
+  try {
+    const file = path.join(dir, '.ci-triage-known-failures.json');
+    const recorded = await runCli(['o/r', '--write-known', file], { env: { ...process.env, CI_TRIAGE_API_BASE: mock.base } });
+    assert.equal(recorded.status, 0);
+    const result = await runCli(['o/r', '--known', file], { env: { ...process.env, CI_TRIAGE_API_BASE: mock.base } });
+    assert.equal(result.status, 0);
+    for (const line of EXAMPLE_3_LINES) {
+      assert.ok(result.stdout.includes(line), `live output is missing: ${line}`);
+    }
+  } finally {
+    await mock.close();
+    fs.rmSync(dir, { recursive: true, force: true });
   }
 });

@@ -1,9 +1,12 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import fs from 'node:fs';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { job, run, startMockServer } from './mock-server.mjs';
+import { tempDir } from '../scripts/support.mjs';
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const bin = path.join(root, 'bin', 'ci-triage.js');
@@ -148,5 +151,100 @@ test('mcp: prompts/list and prompts/get serve the triage_ci workflow', async () 
     assert.match(unknown.error.message, /unknown prompt: nope/);
   } finally {
     await client.stop();
+  }
+});
+
+test('mcp: tools declare outputSchema and results carry structuredContent', async () => {
+  const client = startClient();
+  try {
+    await client.send({ method: 'initialize', params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'test', version: '1' } } });
+    const list = await client.send({ method: 'tools/list' });
+    // A loose object schema on purpose — the payloads are dynamic
+    // nested objects, and the Inspector validates structuredContent
+    // against it, so a detailed schema would warn on any property it
+    // does not list.
+    for (const tool of list.result.tools) {
+      assert.deepEqual(tool.outputSchema, { type: 'object' });
+    }
+    const call = await client.send({ method: 'tools/call', params: { name: 'triage_log', arguments: { log: jestLog } } });
+    assert.equal(call.result.isError, false);
+    assert.deepEqual(call.result.structuredContent, JSON.parse(call.result.content[0].text));
+    // An error result carries no structuredContent: there is no
+    // payload to type.
+    const bad = await client.send({ method: 'tools/call', params: { name: 'triage_log', arguments: {} } });
+    assert.equal(bad.result.isError, true);
+    assert.equal('structuredContent' in bad.result, false);
+  } finally {
+    await client.stop();
+  }
+});
+
+test('mcp: triage_repo advertises knownFile, and a corrupt file is a tool error', async () => {
+  const client = startClient();
+  const dir = tempDir('ci-triage-known-mcp-');
+  try {
+    await client.send({ method: 'initialize', params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'test', version: '1' } } });
+    const list = await client.send({ method: 'tools/list' });
+    const [repo] = list.result.tools;
+    assert.equal(repo.inputSchema.properties.knownFile.type, 'string');
+    assert.match(repo.inputSchema.properties.knownFile.description, /known-failures file/);
+    // A corrupt file fails before any API call: the load is wired,
+    // and the error names the file instead of failing the triage.
+    const bad = path.join(dir, 'bad.json');
+    fs.writeFileSync(bad, '{not json', 'utf8');
+    const call = await client.send({
+      method: 'tools/call',
+      params: { name: 'triage_repo', arguments: { repo: 'o/r', knownFile: bad } },
+    });
+    assert.equal(call.result.isError, true);
+    assert.match(call.result.content[0].text, /not valid JSON/);
+  } finally {
+    await client.stop();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('mcp: the triage_ci prompt ranks known failures last', async () => {
+  const client = startClient();
+  try {
+    await client.send({ method: 'initialize', params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'test', version: '1' } } });
+    const get = await client.send({ method: 'prompts/get', params: { name: 'triage_ci', arguments: { repo: 'o/r' } } });
+    const text = get.result.messages[0].content.text;
+    assert.match(text, /then known failures \(already recorded, not new\)/);
+  } finally {
+    await client.stop();
+  }
+});
+
+test('mcp: triage_repo carries the regression window over stdio', async () => {
+  const mock = await startMockServer({
+    runs: [
+      run(2, { conclusion: 'failure', headSha: 'aaa0000000000000000000000000000000000000', createdAt: '2026-11-12T10:00:00Z' }),
+      run(1, { conclusion: 'success', headSha: 'ccc0000000000000000000000000000000000000', createdAt: '2026-11-12T08:00:00Z' }),
+    ],
+    jobs: { 2: [job(21, { name: 'test' })] },
+    logs: { 21: jestLog },
+  });
+  try {
+    process.env.CI_TRIAGE_API_BASE = mock.base;
+    const client = startClient();
+    try {
+      await client.send({ method: 'initialize', params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'test', version: '1' } } });
+      const call = await client.send({
+        method: 'tools/call',
+        params: { name: 'triage_repo', arguments: { repo: 'o/r' } },
+      });
+      assert.equal(call.result.isError, false);
+      const result = JSON.parse(call.result.content[0].text);
+      assert.equal(result.clusters.length, 1);
+      assert.equal(result.clusters[0].flaky, false);
+      assert.equal(result.clusters[0].regressionWindow.lastGreen.number, 1);
+      assert.equal(result.clusters[0].regressionWindow.firstRed.number, 2);
+    } finally {
+      await client.stop();
+    }
+  } finally {
+    delete process.env.CI_TRIAGE_API_BASE;
+    await mock.close();
   }
 });
