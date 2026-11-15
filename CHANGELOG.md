@@ -51,6 +51,11 @@
   writer of version strings), without adopting semantic-release
   itself. The script is shared with dev-diagnosis: files a repo does
   not have (pre-commit manifest, demo tape) are skipped.
+- Fixed: the Windows CI failures the first 0.1.2 push exposed. The
+  version-bump script never ran on Windows — its entry-point guard
+  compared `import.meta.url` with `'file://' + process.argv[1]`, which
+  never matches a drive-letter path (`C:\...`), so it exited 0 having
+  done nothing; the guard now compares resolved filesystem paths.
 
 ## 0.1.1 — 2026-11-14
   <version>` moves every version pin at once (package.json,

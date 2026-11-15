@@ -275,6 +275,11 @@ export function main(argv = process.argv.slice(2)) {
   return 0;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+// Compare resolved filesystem paths, not URL strings: on Windows
+// process.argv[1] is a drive-letter path (C:\...) while import.meta.url
+// is a file:// URL, so `import.meta.url === 'file://' + argv[1]` never
+// matches there and the script silently does nothing — exit 0, no
+// output, no files changed (the 2026-11-15 Windows CI failures).
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   process.exitCode = main();
 }
