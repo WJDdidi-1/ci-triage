@@ -36,6 +36,10 @@ function writeFixture(dir, { withExtras = true, withUnreleased = true, readmeRev
   fs.writeFileSync(path.join(dir, '.claude-plugin', 'marketplace.json'), JSON.stringify({
     metadata: { version: OLD },
   }, null, 2));
+  fs.writeFileSync(path.join(dir, 'manifest.json'), JSON.stringify({
+    name: pkg.name.replace('-cli', ''), version: OLD,
+    server: { entry_point: 'bin/x.js' },
+  }, null, 2));
   if (withExtras) {
     fs.writeFileSync(path.join(dir, '.pre-commit-hooks.yaml'),
       `#     rev: v${OLD}\n- id: x\n  additional_dependencies: ['${pkg.name}@${OLD}']\n`);
@@ -71,6 +75,7 @@ test('bump-version: moves every version mention and renames Unreleased', () => {
   assert.equal(server.version, NEW);
   assert.equal(server.packages[0].version, NEW);
   assert.equal(readJson(dir, '.claude-plugin/marketplace.json').metadata.version, NEW);
+  assert.equal(readJson(dir, 'manifest.json').version, NEW);
   const manifest = fs.readFileSync(path.join(dir, '.pre-commit-hooks.yaml'), 'utf8');
   assert.ok(manifest.includes(`${pkg.name}@${NEW}`));
   assert.ok(manifest.includes(`rev: v${NEW}`));
@@ -91,6 +96,7 @@ test('bump-version: works without the optional files (the other repo\'s shape)',
   assert.equal(readJson(dir, 'package.json').version, NEW);
   assert.equal(readJson(dir, 'server.json').version, NEW);
   assert.equal(readJson(dir, '.claude-plugin/marketplace.json').metadata.version, NEW);
+  assert.equal(readJson(dir, 'manifest.json').version, NEW);
   assert.ok(fs.readFileSync(path.join(dir, 'CHANGELOG.md'), 'utf8').includes(`## ${NEW} — ${DATE}`));
 });
 
@@ -157,4 +163,16 @@ test('bump-version: a stale README rev refuses the tree before writing anything'
   assert.match(result.stderr, /README documented rev/);
   // Nothing was written: the pre-flight runs before any edit.
   assert.equal(fs.readFileSync(path.join(dir, 'package.json'), 'utf8'), before);
+});
+
+test('bump-version: the real CHANGELOG has no duplicate version heading', () => {
+  // The 0.1.1 release-night assembly once left a second `## 0.1.1`
+  // header plus the tail of the bump-version paragraph under it; the
+  // bump script moves `## Unreleased` to a new heading, so a duplicate
+  // can only come from a bad assembly — pin the shape here so the next
+  // one is caught by the suite instead of by a reader.
+  const log = fs.readFileSync(path.join(root, 'CHANGELOG.md'), 'utf8');
+  const headings = [...log.matchAll(/^## (\d+\.\d+\.\d+) — /gm)].map((m) => m[1]);
+  assert.ok(headings.length >= 2);
+  assert.equal(new Set(headings).size, headings.length, `duplicate version heading: ${headings.join(', ')}`);
 });

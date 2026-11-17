@@ -31,7 +31,7 @@ import { parseRepo } from '../lib/github.mjs';
 import { KnownError, loadKnownFailures, writeKnownFailures } from '../lib/known.mjs';
 import { runMcpServer } from '../lib/mcp.mjs';
 import { runDoctor } from '../lib/doctor.mjs';
-import { generateCompletion, knownOptions } from '../lib/completion.mjs';
+import { generateCompletion, knownCommands, knownOptions } from '../lib/completion.mjs';
 import { formatAnnotations, formatReport, reportJson, starPromptLine, verdictLine, writeReportFile, writeStepSummary } from '../lib/report.mjs';
 import { ensureAgentsSection, generateSkill } from '../lib/skill.mjs';
 import { MAX_RUNS, triageRepo } from '../lib/triage.mjs';
@@ -47,7 +47,7 @@ Usage:
   ci-triage doctor [--json]
   ci-triage completion <bash|zsh|fish>
   ci-triage --mcp
-  ci-triage --skill-generate [--global | --project]
+  ci-triage --skill-generate [--global | --project] [--agents]
   ci-triage --help
   ci-triage --version
 
@@ -102,10 +102,16 @@ Options:
                 ./.claude/skills/ci-triage/SKILL.md by default
                 (--project), or ~/.claude/skills/ci-triage/SKILL.md
                 with --global. Refuses to overwrite an existing file.
-                Also appends a short section to ./AGENTS.md (--project
-                only), so agents that read AGENTS.md at startup find it.
+                With --agents, write it to ./.agents/skills instead
+                (or ~/.agents/skills with --global): the shared location
+                Gemini CLI and Codex discover skills from, so the same
+                skill reaches them too. Also appends a short section to
+                ./AGENTS.md (--project only), so agents that read
+                AGENTS.md at startup find it.
   --global      with --skill-generate: write the skill to ~/.claude/skills
   --project     with --skill-generate: write the skill to ./.claude/skills
+  --agents      with --skill-generate: write the skill to .agents/skills
+                instead of .claude/skills (Gemini CLI and Codex)
   -h, --help    show this help
   -v, --version print the version
 
@@ -130,6 +136,13 @@ wiring (a missing skill, no token, an unreachable API); only
 failures make it exit 1. --json for machines. The method is
 Claude Code's 'claude doctor'.
 
+Examples:
+  ci-triage owner/repo                 triage the last 10 failed runs
+  ci-triage owner/repo --workflow ci.yml
+                                       only the CI workflow's runs
+  ci-triage owner/repo --report triage.md
+                                       also write the triage as Markdown
+
 Exit codes: 0 = no failures in the window, or the only failures are
 recorded known failures; 1 = failures found;
 2 = usage error or the triage could not run.
@@ -139,6 +152,7 @@ recorded known failures; 1 = failures found;
 // parser accepts: the suggestion list below is derived from it, so
 // a flag added to the parser is automatically completable.
 const KNOWN_OPTIONS = knownOptions();
+const KNOWN_COMMANDS = knownCommands();
 
 // Levenshtein distance — small, dependency-free, used only to suggest a
 // correction when the user mistypes an option. This is the method git,
@@ -184,7 +198,7 @@ function parseArgs(argv) {
   const parsed = {
     repo: null, positional: [], json: false, help: false, version: false,
     runs: null, workflow: null, branch: null, top: null, error: null,
-    mcp: false, skillGenerate: false, skillGlobal: false, skillProject: false,
+    mcp: false, skillGenerate: false, skillGlobal: false, skillProject: false, skillAgents: false,
     report: null, annotations: false, known: null, writeKnown: null,
   };
   let i = 0;
@@ -195,6 +209,7 @@ function parseArgs(argv) {
     else if (arg === '--version' || arg === '-v') parsed.version = true;
     else if (arg === '--mcp') parsed.mcp = true;
     else if (arg === '--skill-generate') parsed.skillGenerate = true;
+    else if (arg === '--agents') parsed.skillAgents = true;
     else if (arg === '--global') parsed.skillGlobal = true;
     else if (arg === '--project') parsed.skillProject = true;
     else if (arg === '--runs') {
@@ -254,7 +269,18 @@ function parseArgs(argv) {
       // Suggest the option the user almost certainly meant
       // (--hepl -> --help); the part after '=' is a value, not part
       // of the name.
-      const suggestion = didYouMean(arg.split('=')[0], KNOWN_OPTIONS);
+      let suggestion = didYouMean(arg.split('=')[0], KNOWN_OPTIONS);
+      if (!suggestion && parsed.repo === null) {
+        // A flag-shaped token that names — or nearly names — a
+        // subcommand (--doctor, --completio) almost certainly means
+        // the subcommand, not an option: suggest it without dashes.
+        // Only before any repo was parsed — after `owner/repo` it
+        // would be noise. The exact-name case suggests too.
+        const bare = arg.split('=')[0].replace(/^-+/, '');
+        suggestion = KNOWN_COMMANDS.includes(bare)
+          ? `Did you mean '${bare}'?`
+          : didYouMean(bare, KNOWN_COMMANDS);
+      }
       parsed.error = `unknown option: ${arg}${suggestion ? `\n${suggestion}` : ''}`;
     } else if (parsed.repo === null) parsed.repo = arg;
     else parsed.positional.push(arg);
@@ -355,14 +381,15 @@ async function main(argv) {
       return 2;
     }
     const scope = args.skillGlobal ? 'global' : 'project';
+    const flavor = args.skillAgents ? 'agents' : 'claude';
     // The AGENTS.md section goes in first, so a re-run that refuses
     // to overwrite an existing SKILL.md still leaves the repo with
     // the discovery entry point — it is append-only and idempotent.
-    const agents = ensureAgentsSection(scope);
+    const agents = ensureAgentsSection(scope, process.cwd(), flavor);
     if (agents.status === 'created') console.log(`Wrote ${agents.path}`);
     else if (agents.status === 'appended') console.log(`Appended a section to ${agents.path}`);
     else if (agents.status === 'skipped') console.log(`Note: ${agents.reason}`);
-    const out = generateSkill(scope);
+    const out = generateSkill(scope, process.cwd(), flavor);
     if (!out.created) {
       console.error(`Error: ${out.reason} — refusing to overwrite it.`);
       return 1;
@@ -370,8 +397,8 @@ async function main(argv) {
     console.log(`Wrote ${out.path}`);
     return 0;
   }
-  if (args.skillGlobal || args.skillProject) {
-    console.error('Error: --global and --project only apply to --skill-generate.');
+  if (args.skillGlobal || args.skillProject || args.skillAgents) {
+    console.error('Error: --global, --project and --agents only apply to --skill-generate.');
     console.error('Run with --help to see the available options.');
     return 2;
   }

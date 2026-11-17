@@ -96,6 +96,26 @@ test('summary: a clean window says green, an unreadable one says UNKNOWN', () =>
   assert.match(unknown, /needs a GitHub token \(403\)/);
 });
 
+test('report: an unreadable window names when the failed jobs ran', () => {
+  // Dogfooding unauthenticated on WJDdidi-1/dev-doctor showed the
+  // UNKNOWN report with no dates at all: 30 failed jobs, no way to
+  // tell whether they broke today or last week. The runs already
+  // carry their dates, so the report names the span.
+  const failures = [
+    { signature: null, logError: 'downloading this job log needs a GitHub token (403)', run: 44, createdAt: '2026-11-14T12:03:00.000Z' },
+    { signature: null, logError: 'downloading this job log needs a GitHub token (403)', run: 57, createdAt: '2026-11-15T08:41:00.000Z' },
+  ];
+  const unknown = { ...clustered, clusters: [], failures };
+  assert.match(formatReport(unknown), /Failed jobs #44–#57 · 2026-11-14 12:03 – 2026-11-15 08:41/);
+  assert.match(formatSummary(unknown), /Failed jobs #44–#57 · 2026-11-14 12:03 – 2026-11-15 08:41/);
+  // One job: singular, no range. No dates at all: no line, never a guess.
+  const one = { ...clustered, clusters: [], failures: failures.slice(1) };
+  assert.match(formatReport(one), /Failed job #57 · 2026-11-15 08:41/);
+  const undated = { ...clustered, clusters: [], failures: [{ signature: null, logError: 'log expired' }] };
+  assert.doesNotMatch(formatReport(undated), /Failed jobs? #/);
+  assert.doesNotMatch(formatSummary(undated), /Failed jobs? #/);
+});
+
 test('report: writeReportFile writes the Markdown summary to a file', () => {
   const dir = tempDir('ci-triage-report-');
   const file = path.join(dir, 'triage.md');
@@ -396,6 +416,64 @@ test('report: a real regression names its green-to-red window with the git log c
   assert.match(md, /broke between #1 \(ccc0000\) and #2 \(aaa0000\) — git log ccc0000\.\.aaa0000 lists the suspect commits/);
   const line = formatAnnotations(windowed);
   assert.match(line, /Broke between #1 \(ccc0000\) and #2 \(aaa0000\)\./);
+});
+
+test('report: the window line lists the files the compare named', () => {
+  const withFiles = {
+    ...windowed,
+    clusters: [
+      {
+        ...windowed.clusters[0],
+        regressionWindow: {
+          ...windowed.clusters[0].regressionWindow,
+          changedFiles: {
+            files: ['lib/context.mjs', 'test/context.test.mjs'],
+            totalFiles: 2,
+            compareUrl: 'https://github.com/o/r/compare/ccc0000...aaa0000',
+          },
+        },
+      },
+    ],
+  };
+  assert.match(formatReport(withFiles), /Changed files: lib\/context\.mjs, test\/context\.test\.mjs$/m);
+  assert.match(formatSummary(withFiles), /Changed files: lib\/context\.mjs, test\/context\.test\.mjs$/m);
+  // The annotation keeps the window sentence only: filenames would
+  // bloat a one-line annotation past its useful length.
+  assert.doesNotMatch(formatAnnotations(withFiles), /Changed files/);
+});
+
+test('report: a wide compare truncates the file list and counts the rest', () => {
+  const files = Array.from({ length: 10 }, (_, i) => `lib/f${i}.mjs`);
+  const wide = {
+    ...windowed,
+    clusters: [
+      {
+        ...windowed.clusters[0],
+        regressionWindow: {
+          ...windowed.clusters[0].regressionWindow,
+          changedFiles: { files, totalFiles: 12, compareUrl: 'https://github.com/o/r/compare/ccc0000...aaa0000' },
+        },
+      },
+    ],
+  };
+  assert.match(formatReport(wide), /Changed files: lib\/f0\.mjs, .*lib\/f9\.mjs \(\+2 more\)/);
+  assert.match(formatSummary(wide), /\(\+2 more\)/);
+});
+
+test('report: a compare that found no file change says so plainly', () => {
+  const none = {
+    ...windowed,
+    clusters: [
+      {
+        ...windowed.clusters[0],
+        regressionWindow: {
+          ...windowed.clusters[0].regressionWindow,
+          changedFiles: { files: [], totalFiles: 0, compareUrl: 'https://github.com/o/r/compare/ccc0000...aaa0000' },
+        },
+      },
+    ],
+  };
+  assert.match(formatReport(none), /Changed files: none/);
 });
 
 test('report: a regression with no green run in the window says so instead of pretending it is closed', () => {

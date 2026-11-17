@@ -1,0 +1,70 @@
+{
+  "author": {
+    "name": "WJDdidi-1"
+  },
+  "compatibility": {
+    "platforms": [
+      "darwin",
+      "win32",
+      "linux"
+    ],
+    "runtimes": {
+      "node": ">=18.0.0"
+    }
+  },
+  "description": "Cross-run CI failure triage for GitHub Actions: group recent failed runs by root cause, classify them, and separate real regressions from flaky failures — in one page, from the command line.",
+  "display_name": "ci-triage",
+  "homepage": "https://github.com/WJDdidi-1/ci-triage#readme",
+  "keywords": [
+    "ci",
+    "triage",
+    "github-actions",
+    "flaky-tests",
+    "mcp",
+    "ai-agent",
+    "developer-tools",
+    "diagnostics",
+    "nodejs",
+    "cli"
+  ],
+  "license": "Apache-2.0",
+  "manifest_version": "0.3",
+  "name": "ci-triage",
+  "prompts": [
+    {
+      "arguments": [
+        "repo",
+        "workflow"
+      ],
+      "description": "Find what broke in CI and what to fix first: the ranked root causes with their evidence — without re-running or fixing anything until the user agrees.",
+      "name": "triage_ci",
+      "text": "Triage the latest CI failures for ${arguments.repo}. Call triage_repo with repo \"${arguments.repo}\" and report the root causes ranked by what to fix first: real regressions first, then flaky tests, then unknown, then known failures (already recorded, not new). Do not re-run, retry, or fix anything without the user agreeing."
+    }
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/WJDdidi-1/ci-triage.git"
+  },
+  "server": {
+    "entry_point": "bin/ci-triage.js",
+    "mcp_config": {
+      "args": [
+        "${__dirname}/bin/ci-triage.js",
+        "--mcp"
+      ],
+      "command": "node"
+    },
+    "type": "node"
+  },
+  "tools": [
+    {
+      "description": "Triage a repo's recent failed GitHub Actions runs: fetch the failed runs, pull the failed job logs, group failures by root cause, and classify each as a test failure, build failure, infra failure, or flaky.",
+      "name": "triage_repo"
+    },
+    {
+      "description": "Triage one pasted CI job log (no network): extract the error signature and classify it as a test failure, build failure, infra failure, or unknown.",
+      "name": "triage_log"
+    }
+  ],
+  "version": "0.1.3"
+}

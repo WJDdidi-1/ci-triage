@@ -2,20 +2,27 @@
  * A mock GitHub API server for the test suite, so triageRepo and
  * the CLI can be exercised end to end without the network.
  *
- * A scenario is { runs: [...], jobs: { [runId]: [...] }, logs: { [jobId]: 'text' } }.
+ * A scenario is { runs: [...], jobs: { [runId]: [...] }, logs: { [jobId]: 'text' }, compare: {...} }.
  * Runs are workflow_runs in the shape the real API returns; jobs are
- * the jobs array of a run's jobs list. The server answers the three
- * endpoints triageRepo uses and 404s everything else.
+ * the jobs array of a run's jobs list. `compare` is { files: [filenames], html_url }
+ * (or a status code to answer with) for the compare endpoint. The server
+ * answers the four endpoints triageRepo uses and 404s everything else.
  */
 import http from 'node:http';
 
 export function startMockServer(scenario) {
+  // Every request pathname, in order — so a test can prove how many
+  // calls a triage made (for example, that a refused log download
+  // stops the rest instead of retrying a request known to fail).
+  const requests = [];
   const server = http.createServer((req, res) => {
     const url = new URL(req.url, 'http://127.0.0.1');
+    requests.push(url.pathname);
     const runsMatch = url.pathname.match(/^\/repos\/[^/]+\/[^/]+\/actions\/runs$/);
     const workflowRunsMatch = url.pathname.match(/^\/repos\/[^/]+\/[^/]+\/actions\/workflows\/[^/]+\/runs$/);
     const jobsMatch = url.pathname.match(/^\/repos\/[^/]+\/[^/]+\/actions\/runs\/(\d+)\/jobs$/);
     const logsMatch = url.pathname.match(/^\/repos\/[^/]+\/[^/]+\/actions\/jobs\/(\d+)\/logs$/);
+    const compareMatch = url.pathname.match(/^\/repos\/[^/]+\/[^/]+\/compare\/.+$/);
     if (runsMatch || workflowRunsMatch) {
       const runs = scenario.runs || [];
       res.writeHead(200, { 'content-type': 'application/json' });
@@ -47,6 +54,28 @@ export function startMockServer(scenario) {
       res.end(log);
       return;
     }
+    if (compareMatch) {
+      const compare = scenario.compare;
+      if (compare == null) {
+        res.writeHead(404, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ message: 'Not Found' }));
+        return;
+      }
+      // A numeric compare value is a status code to answer with (the
+      // tests use 404 to stand in for "no common ancestor").
+      if (typeof compare === 'number') {
+        res.writeHead(compare, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ message: 'Not Found' }));
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({
+        html_url: compare.html_url ?? 'https://github.com/o/r/compare/ccc0000...aaa0000',
+        files: (compare.files || []).map((filename) => ({ filename })),
+        total_commits: compare.totalCommits ?? 1,
+      }));
+      return;
+    }
     res.writeHead(404, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ message: 'Not Found' }));
   });
@@ -55,6 +84,7 @@ export function startMockServer(scenario) {
       const { port } = server.address();
       resolve({
         base: `http://127.0.0.1:${port}`,
+        requests,
         close: () => new Promise((done) => server.close(done)),
       });
     });

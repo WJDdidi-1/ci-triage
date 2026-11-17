@@ -224,6 +224,7 @@ test('mcp: triage_repo carries the regression window over stdio', async () => {
     ],
     jobs: { 2: [job(21, { name: 'test' })] },
     logs: { 21: jestLog },
+    compare: { files: ['lib/context.mjs'] },
   });
   try {
     process.env.CI_TRIAGE_API_BASE = mock.base;
@@ -240,6 +241,7 @@ test('mcp: triage_repo carries the regression window over stdio', async () => {
       assert.equal(result.clusters[0].flaky, false);
       assert.equal(result.clusters[0].regressionWindow.lastGreen.number, 1);
       assert.equal(result.clusters[0].regressionWindow.firstRed.number, 2);
+      assert.deepEqual(result.clusters[0].regressionWindow.changedFiles.files, ['lib/context.mjs']);
     } finally {
       await client.stop();
     }

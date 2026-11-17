@@ -135,6 +135,15 @@ test('cli: --help lists the triage options', async () => {
   }
 });
 
+test('cli: --help ends with copy-pasteable examples', async () => {
+  const result = await runCli(['--help']);
+  assert.equal(result.status, 0);
+  assert.match(result.stdout, /Examples:\n  ci-triage owner\/repo {2,}triage the last 10 failed runs/);
+  for (const line of ['ci-triage owner/repo --workflow ci.yml', 'ci-triage owner/repo --report triage.md']) {
+    assert.ok(result.stdout.includes(line), `help examples should include ${line}`);
+  }
+});
+
 test('cli: --version prints the package version', async () => {
   const result = await runCli(['--version']);
   assert.equal(result.status, 0);
@@ -167,6 +176,24 @@ test('cli: a mistyped option suggests the intended option', async () => {
   const json = await runCli(['o/r', '--jso']);
   assert.equal(json.status, 2);
   assert.match(json.stderr, /Did you mean '--json'\?/);
+});
+
+test('cli: a flag-shaped subcommand suggests the subcommand', async () => {
+  const doctor = await runCli(['--doctor']);
+  assert.equal(doctor.status, 2);
+  assert.match(doctor.stderr, /unknown option: --doctor/);
+  assert.match(doctor.stderr, /Did you mean 'doctor'\?/);
+  const completio = await runCli(['--completio']);
+  assert.equal(completio.status, 2);
+  assert.match(completio.stderr, /Did you mean 'completion'\?/);
+  // The exact subcommand name, typed as a flag, suggests too.
+  const completion = await runCli(['--completion']);
+  assert.equal(completion.status, 2);
+  assert.match(completion.stderr, /Did you mean 'completion'\?/);
+  // After a repo was parsed, a flag-shaped subcommand is noise.
+  const after = await runCli(['o/r', '--doctor']);
+  assert.equal(after.status, 2);
+  assert.doesNotMatch(after.stderr, /Did you mean/);
 });
 
 test('cli: a far-off option typo gets no suggestion', async () => {
@@ -624,4 +651,14 @@ test('cli: --known with --json carries knownFailures and the known flag', async 
   } finally {
     await mock.close();
   }
+});
+
+test('cli: the README states no test count — counts rot every round', () => {
+  // The Contributing block once said "184 tests" while the suite was
+  // already 187. A count in the README goes stale the next round
+  // that adds a test, and the suite prints its own count on every
+  // run — so the README carries no number to go stale.
+  const readme = readFileSync(path.join(root, 'README.md'), 'utf8');
+  assert.doesNotMatch(readme, /\d+ tests, run serially/);
+  assert.match(readme, /npm test\s+# node:test, no extra dependencies, run serially/);
 });

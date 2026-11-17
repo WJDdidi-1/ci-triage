@@ -155,6 +155,89 @@ test('triage: a 403 on a log says plainly that a token is needed', async () => {
   }
 });
 
+test('triage: one refused log download stops the rest — no doomed retries', async () => {
+  // Dogfood finding: unauthenticated against WJDdidi-1/dev-doctor,
+  // the triage made 30 log downloads, every one a 403, before
+  // reporting the token message once — 21.7 s and half the 60/hour
+  // anonymous budget on requests known to fail after the first.
+  const mock = await startMockServer({
+    runs: [run(1, { conclusion: 'failure' }), run(2, { conclusion: 'failure' })],
+    jobs: { 1: [job(11, { name: 'a' }), job(12, { name: 'b' })], 2: [job(21, { name: 'c' }), job(22, { name: 'd' })] },
+    logs: { 11: 403, 12: 403, 21: 403, 22: 403 },
+  });
+  try {
+    process.env.CI_TRIAGE_API_BASE = mock.base;
+    const result = await triageRepo('o/r', { runs: 10 });
+    // All four failed jobs are still reported, with the same reason —
+    // the jobs lists succeeded, only the downloads were refused.
+    assert.equal(result.failures.length, 4);
+    assert.ok(result.failures.every((f) => /needs a GitHub token/.test(f.logError)));
+    assert.equal(result.clusters.length, 0);
+    // But only one download was attempted.
+    assert.equal(mock.requests.filter((p) => p.endsWith('/logs')).length, 1);
+  } finally {
+    delete process.env.CI_TRIAGE_API_BASE;
+    await mock.close();
+  }
+});
+
+test('triage: a transient log failure does not stop the other downloads', async () => {
+  // Only the 403 is terminal: a 500 on one job must not poison the
+  // downloads after it.
+  const mock = await startMockServer({
+    runs: [run(1, { conclusion: 'failure' })],
+    jobs: { 1: [job(11, { name: 'a' }), job(12, { name: 'b' })] },
+    logs: { 11: 500, 12: 'Error: test suite failed\n  at foo.test.js:42' },
+  });
+  try {
+    process.env.CI_TRIAGE_API_BASE = mock.base;
+    const result = await triageRepo('o/r', { runs: 10 });
+    assert.equal(result.failures.length, 2);
+    assert.match(result.failures[0].logError, /500/);
+    assert.ok(result.failures[1].signature, 'expected the second job to be triaged');
+    assert.equal(mock.requests.filter((p) => p.endsWith('/logs')).length, 2);
+  } finally {
+    delete process.env.CI_TRIAGE_API_BASE;
+    await mock.close();
+  }
+});
+
+test('triage: jobs lists are fetched before any log download starts', async () => {
+  // The jobs lists used to be fetched one run at a time, each
+  // followed by that run's log downloads — ten failed runs cost
+  // ~10 s of sequential list calls before the log work. The lists
+  // are independent GETs, so they now go out concurrently and the
+  // downloads run afterwards, in run order. The mock records
+  // request order, which proves the two phases are separated
+  // without depending on timing.
+  const mock = await startMockServer({
+    runs: [run(1, { conclusion: 'failure' }), run(2, { conclusion: 'failure' })],
+    jobs: { 1: [job(11, { name: 'a' })], 2: [job(21, { name: 'b' })] },
+    logs: { 11: 'Error: test suite failed\n  at foo.test.js:42', 21: 'Error: test suite failed\n  at foo.test.js:42' },
+  });
+  try {
+    process.env.CI_TRIAGE_API_BASE = mock.base;
+    const result = await triageRepo('o/r', { runs: 10 });
+    // The report is unchanged: both failures, in run order, triaged.
+    assert.equal(result.failures.length, 2);
+    assert.deepEqual(result.failures.map((f) => f.run), [1, 2]);
+    // The run's date rides the public failure shape: the UNKNOWN
+    // report's span line reads it, and it was once dropped at this
+    // boundary — the line silently vanished on a real triage.
+    assert.deepEqual(result.failures.map((f) => f.createdAt), ['2026-11-12T14:03:15Z', '2026-11-12T14:03:15Z']);
+    assert.ok(result.failures.every((f) => f.signature), 'expected both jobs to be triaged');
+    // Every jobs-list request precedes every log download.
+    const jobsIdx = mock.requests.map((p, i) => (p.endsWith('/jobs') ? i : -1)).filter((i) => i >= 0);
+    const logsIdx = mock.requests.map((p, i) => (p.endsWith('/logs') ? i : -1)).filter((i) => i >= 0);
+    assert.equal(jobsIdx.length, 2);
+    assert.equal(logsIdx.length, 2);
+    assert.ok(Math.max(...jobsIdx) < Math.min(...logsIdx), 'expected all jobs lists before any log download');
+  } finally {
+    delete process.env.CI_TRIAGE_API_BASE;
+    await mock.close();
+  }
+});
+
 test('triage: --runs limits how many failed runs are examined', async () => {
   const scenario = {
     runs: [
@@ -284,6 +367,74 @@ test('triage: a real regression carries its green-to-red window', async () => {
     assert.equal(cluster.regressionWindow.lastGreen.headSha, 'ccc0000000000000000000000000000000000000');
     assert.equal(cluster.regressionWindow.firstRed.number, 2);
     assert.equal(cluster.regressionWindow.firstRed.headSha, 'aaa0000000000000000000000000000000000000');
+  } finally {
+    delete process.env.CI_TRIAGE_API_BASE;
+    await mock.close();
+  }
+});
+
+test('triage: a real regression names the files changed between green and red', async () => {
+  // Same green→red window as the test above, plus a compare that
+  // names 12 changed files: the report carries the first 10 and
+  // the count of the rest, with the compare URL to open the full
+  // diff.
+  const changed = ['lib/context.mjs', 'test/context.test.mjs', 'README.md', 'CHANGELOG.md', 'package.json',
+    'package-lock.json', 'lib/a.mjs', 'lib/b.mjs', 'lib/c.mjs', 'lib/d.mjs', 'lib/e.mjs', 'lib/f.mjs'];
+  const scenario = {
+    runs: [
+      run(3, { conclusion: 'failure', headSha: 'bbb0000000000000000000000000000000000000', createdAt: '2026-11-12T14:03:15Z' }),
+      run(2, { conclusion: 'failure', headSha: 'aaa0000000000000000000000000000000000000', createdAt: '2026-11-12T10:00:00Z' }),
+      run(1, { conclusion: 'success', headSha: 'ccc0000000000000000000000000000000000000', createdAt: '2026-11-12T08:00:00Z' }),
+    ],
+    jobs: {
+      3: [job(31, { name: 'test' })],
+      2: [job(21, { name: 'test' })],
+    },
+    logs: {
+      31: read('jest-failure-run2.log'),
+      21: read('jest-failure.log'),
+    },
+    compare: { files: changed },
+  };
+  const mock = await startMockServer(scenario);
+  try {
+    process.env.CI_TRIAGE_API_BASE = mock.base;
+    const result = await triageRepo('o/r', { runs: 10 });
+    assert.equal(result.clusters.length, 1);
+    const { changedFiles } = result.clusters[0].regressionWindow;
+    assert.deepEqual(changedFiles.files, changed.slice(0, 10));
+    assert.equal(changedFiles.totalFiles, 12);
+    assert.match(changedFiles.compareUrl, /github\.com\/o\/r\/compare\//);
+  } finally {
+    delete process.env.CI_TRIAGE_API_BASE;
+    await mock.close();
+  }
+});
+
+test('triage: a failed compare leaves the window intact', async () => {
+  // The compare 404s (no common ancestor): the triage still
+  // succeeds, the window still names both endpoints, and the reason
+  // rides along in the JSON instead of the report pretending the
+  // file list exists.
+  const scenario = {
+    runs: [
+      run(2, { conclusion: 'failure', headSha: 'aaa0000000000000000000000000000000000000', createdAt: '2026-11-12T10:00:00Z' }),
+      run(1, { conclusion: 'success', headSha: 'ccc0000000000000000000000000000000000000', createdAt: '2026-11-12T08:00:00Z' }),
+    ],
+    jobs: { 2: [job(21, { name: 'test' })] },
+    logs: { 21: read('jest-failure.log') },
+    compare: 404,
+  };
+  const mock = await startMockServer(scenario);
+  try {
+    process.env.CI_TRIAGE_API_BASE = mock.base;
+    const result = await triageRepo('o/r', { runs: 10 });
+    assert.equal(result.clusters.length, 1);
+    const window = result.clusters[0].regressionWindow;
+    assert.equal(window.lastGreen.number, 1);
+    assert.equal(window.firstRed.number, 2);
+    assert.equal(window.changedFiles, null);
+    assert.match(window.changedFilesError, /no common ancestor/);
   } finally {
     delete process.env.CI_TRIAGE_API_BASE;
     await mock.close();

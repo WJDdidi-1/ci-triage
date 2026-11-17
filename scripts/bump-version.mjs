@@ -6,7 +6,7 @@
  *   node scripts/bump-version.mjs <new-version> [--date YYYY-MM-DD] [--root <dir>]
  *
  * The version lives in more than one file: package.json, package-lock.json
- * (two fields), server.json (two fields), .claude-plugin/marketplace.json,
+ * (two fields), server.json (two fields), manifest.json, .claude-plugin/marketplace.json,
  * the pre-commit manifest's pinned dependency and documented rev,
  * the README's documented rev, and the demo tape's GIF label — plus the
  * CHANGELOG's `## Unreleased` heading, which becomes the new version.
@@ -137,6 +137,9 @@ export function main(argv = process.argv.slice(2)) {
     if (exists('server.json')) {
       expect('server.json version', countVersionFields(read('server.json'), old) >= 1);
     }
+    if (exists('manifest.json')) {
+      expect('manifest.json version', countVersionFields(read('manifest.json'), old) === 1);
+    }
     const marketRel = path.join('.claude-plugin', 'marketplace.json');
     if (exists(marketRel)) {
       expect('marketplace.json version', countVersionFields(read(marketRel), old) === 1);
@@ -193,6 +196,10 @@ export function main(argv = process.argv.slice(2)) {
       if (countVersionFields(text, old) < 1) return null;
       return replaceVersionField(text, old, version);
     });
+    editFile('manifest.json', (text) => {
+      if (countVersionFields(text, old) !== 1) return null;
+      return replaceVersionField(text, old, version);
+    });
     editFile(path.join('.claude-plugin', 'marketplace.json'), (text) => {
       if (countVersionFields(text, old) !== 1) return null;
       return replaceVersionField(text, old, version);
@@ -237,6 +244,10 @@ export function main(argv = process.argv.slice(2)) {
       const server = JSON.parse(read('server.json'));
       check('server.json version', server.version === version);
       check('server.json packages[0].version', server.packages?.[0]?.version === version);
+    }
+    if (exists('manifest.json')) {
+      const manifest = JSON.parse(read('manifest.json'));
+      check('manifest.json version', manifest.version === version);
     }
     if (exists(path.join('.claude-plugin', 'marketplace.json'))) {
       const market = JSON.parse(read(path.join('.claude-plugin', 'marketplace.json')));

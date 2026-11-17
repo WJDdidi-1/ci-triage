@@ -1,5 +1,136 @@
 # Changelog
 
+## 0.1.3 — 2026-11-17
+
+- A flag-shaped subcommand now suggests the subcommand: `ci-triage
+  --doctor` used to die with a bare "unknown option" and no hint, even
+  though the user almost certainly meant the `doctor` subcommand — the
+  suggester only matched against options, and `--doctor` is not one.
+  Before any repo is parsed, an unknown option is now also matched
+  (dashes stripped) against the subcommands, so `--doctor` suggests
+  `doctor` and `--completio` suggests `completion`; an option typo
+  still wins when it is closer (`--hepl` still suggests `--help`), and
+  after a repo is parsed the fallback stays off, so `o/r --doctor`
+  suggests nothing. Same method gh uses (Cobra's threshold 2),
+  extended one step: gh suggests commands for mistyped commands, this
+  also suggests them for flag-shaped ones.
+
+- An unreadable window now names when the failed jobs ran: dogfooding
+  unauthenticated on WJDdidi-1/dev-doctor showed the UNKNOWN report
+  with no dates at all — 30 failed jobs, no way to tell whether they
+  broke today or last week. The runs already carry their dates, so
+  the report and the Step Summary now print `Failed jobs #44–#57 ·
+  2026-11-14 12:03 – 2026-11-15 08:41` under the No-clusters line
+  (singular for one job; absent when no failure carries a date,
+  never a guess).
+
+- `--skill-generate --agents` writes the skill to `.agents/skills/`
+  instead of `.claude/skills/` — the same spec-valid SKILL.md, a
+  different destination. Gemini CLI (108,873 stars, verified this
+  round) discovers skills from `.agents/skills/` and
+  `~/.agents/skills/` — its own docs call the alias "an
+  interoperable path … compatible across different AI tools" — and
+  Codex scans `.agents/skills` too, but `--skill-generate` only
+  ever wrote the Claude paths, so a Gemini or Codex user got a skill
+  their agent never saw. `doctor` now probes all four skill homes
+  (project/global × Claude/shared) and says which one it found, and
+  the AGENTS.md section points at the file that was actually
+  written.
+
+- `--help` now ends with an Examples section: the three invocations
+  a first-time user actually types (plain triage, `--workflow`,
+  `--report`), each with one line saying what it does. The help
+  was a flag reference with no runnable example — the method is
+  tldr's, examples first, flag reference second. Pinned by a test
+  so the examples cannot drift from the commands they show.
+
+- Tests: coverage is now measured with Node's built-in runner
+  (vitest's `--coverage` method, no new dependency): full-suite
+  line coverage 97.7% (branches 85.5%, functions 97.1%).
+  Measuring it found every `ghJson` error branch untested — the
+  401, both 403s, the 404 and the generic failure are now pinned
+  against a local status server, so the messages a user sees when
+  the API refuses them are verified instead of assumed. The one
+  remaining uncovered line pair is `parseRepo`'s empty-input
+  guard, which the CLI's own check makes unreachable (the
+  user-facing message is covered in `cli.test.mjs`).
+
+- Faster: the jobs lists for all failed runs are fetched concurrently
+  instead of one run at a time. A no-token triage of ten failed runs
+  measured 10.6 s, about 10 s of it sequential list calls before any
+  log work started; the lists are independent GETs, so they now go
+  out together and the same triage now takes ~2–4 s: measured live
+  2026-11-17 on WJDdidi-1/dev-doctor `--runs 10` (no token, same
+  condition as the 10.6 s baseline) at 4.2 s, 2.4 s and 2.9 s over
+  three runs (median 2.9 s, ~3.7× faster). The call
+  count is unchanged, the downloads stay sequential in run order, and
+  the report is identical.
+
+- Fix: one refused log download now stops the rest. Dogfooding
+  unauthenticated on WJDdidi-1/dev-doctor made 30 log downloads —
+  every one a 403, since GitHub does not allow anonymous job-log
+  downloads — before reporting the token message once: 21.7 s and
+  half the 60/hour anonymous budget spent on requests known to fail
+  after the first. The first 403 now stops the downloads: the
+  remaining failed jobs are still listed and recorded with the same
+  reason, without another request, so the report is identical
+  ("30 failed jobs found, but their logs could not be read") and
+  the same triage now takes 10.6 s and one download attempt. Only
+  the 403 is terminal — a transient failure (network, 500) still
+  records the one job and moves on to the next.
+
+- New: a one-click install for Claude Desktop — the repo now ships a
+  `manifest.json` (MCPB, the renamed DXT format: modelcontextprotocol
+  /mcpb, 2,178 stars) and a `.mcpbignore`, so `npx
+  @anthropic-ai/mcpb pack` builds a `.mcpb` bundle the user drags
+  onto Settings → Extensions. Distribution is the bottleneck, and
+  Claude Desktop users previously had no install path at all: the
+  marketplace is Claude Code only, and the MCP registry is a listing,
+  not an installer. The bundle is just the server — zero
+  dependencies, so there are no node_modules to bundle — and
+  `.mcpbignore` keeps tests and tooling out (186 KB → 68 KB, 48 →
+  19 files). The manifest is valid against the official v0.3 schema
+  (checked offline with ajv), the bundle packs with the official
+  toolchain, and an extracted dev-diagnosis bundle runs standalone
+  over MCP. New tests pin the manifest against package.json (name,
+  version, description, license, repository) and against the live
+  server (tool and prompt names, first-sentence descriptions, the
+  prompt template rendered for sample arguments), and the bump
+  script now moves the manifest version with the rest. Honest limit:
+  no Claude Desktop here, so the install click itself is
+  unverified — the local proof is that the manifest validates, the
+  bundle packs, and the bundled server answers.
+
+- New: a real regression's window now names the files that changed
+  between the last green commit and the first red one (GitHub's
+  compare endpoint, one extra call per windowed cluster, capped at
+  10 files with a count of the rest and a link to the full diff), so
+  the report points at the suspect files, not just the suspect
+  commit range. A compare that fails (no common ancestor, rate
+  limit) leaves the window line as it was and records the reason in
+  the JSON — the triage never fails over it. The method is delta's:
+  put the diff next to the diagnosis.
+- Fix: the README no longer states a test count — it said "184
+  tests" while the suite was already 187, and a count in the README
+  goes stale the next round that adds a test. The suite prints its
+  own count on every run, so there is no number left to rot; a test
+  pins the line so a count cannot creep back in.
+- Fix: the CI, publish and MCP-registry workflows pinned their actions
+  to mutable major-version tags (`actions/checkout@v4`,
+  `actions/setup-node@v4`) and the checkout steps persisted the
+  `GITHUB_TOKEN` into the workspace. A zizmor audit (7,061 stars)
+  flagged all six uses at High confidence plus three
+  `persist-credentials` warnings — a moved tag would run attacker
+  code inside the unattended release pipeline, which publishes to npm
+  with OIDC. Both actions are now pinned to the full commit SHA of
+  their v4 tag (with a `# v4` comment so the version stays readable)
+  and every checkout sets `persist-credentials: false`; actionlint
+  and zizmor re-runs are clean of both findings. Two Low-confidence
+  findings remain and are deliberate: the pack smoke test installs
+  the tarball built in the same job, and no `cache:` input is set
+  anywhere, so there is no package-manager cache to poison on the
+  release-only workflows.
+
 ## 0.1.2 — 2026-11-15
 
 - New: MCP structured output — both tools now declare a loose
@@ -56,16 +187,6 @@
   compared `import.meta.url` with `'file://' + process.argv[1]`, which
   never matches a drive-letter path (`C:\...`), so it exited 0 having
   done nothing; the guard now compares resolved filesystem paths.
-
-## 0.1.1 — 2026-11-14
-  <version>` moves every version pin at once (package.json,
-  package-lock.json, server.json, the marketplace metadata), renames
-  the CHANGELOG's `## Unreleased` heading to the new version, and
-  refuses a drifted tree before writing anything instead of
-  half-bumping it. The method is semantic-release's (one mechanical
-  writer of version strings), without adopting semantic-release
-  itself. The script is shared with dev-diagnosis: files a repo does
-  not have (pre-commit manifest, demo tape) are skipped.
 
 ## 0.1.1 — 2026-11-14
 

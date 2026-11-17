@@ -73,10 +73,11 @@ Shell completion for bash, zsh and fish: `ci-triage completion bash` prints a co
 
 ## Auth — read this first
 
-Set `GH_TOKEN` (or `GITHUB_TOKEN`). Without a token the triage can list the failed runs and jobs, **but it cannot download their logs**: GitHub does not allow anonymous job-log downloads, even for public repos. Without a token you get an honest report instead of a triage:
+Set `GH_TOKEN` (or `GITHUB_TOKEN`). Without a token the triage can list the failed runs and jobs, **but it cannot download their logs**: GitHub does not allow anonymous job-log downloads, even for public repos. The first refused download stops the rest — the refusal applies to every job, so the triage lists all the failed jobs with the same reason instead of spending the anonymous budget on downloads known to fail. Without a token you get an honest report instead of a triage:
 
 ```
 No clusters: 9 failed jobs found, but their logs could not be read.
+Failed jobs #41–#49 · 2026-11-14 12:03 – 2026-11-15 08:41
 Reason: downloading this job log needs a GitHub token (403) — GitHub does not allow anonymous log downloads; set GH_TOKEN or run `gh auth login`
 Overall: UNKNOWN — 9 failed jobs found, logs unreadable
 ```
@@ -92,7 +93,7 @@ With a token you get 5,000 API requests per hour. `gh auth login` works too when
 - **Classification:** each cluster is a test failure, a build failure, or an infra failure (timeouts and the like), from the error lines themselves.
 - **Flaky vs real:** a cluster is flaky when the same commit passed on a later run, or when failures and successes alternate in the window. Failing on every recent run is a real regression.
 - **Known failures:** a cluster whose signature is recorded in a known-failures file (`--known`) is reported as a known failure, not a new regression. A triage with only known failures exits 0.
-- **Regression window:** a real regression names the last green run and the first red one ("broke between #1 (ccc0000) and #2 (aaa0000)"); `git log <green>..<red>` lists the suspect commits. The method is git bisect's — the good and bad endpoints — answered from the run history instead of a binary search, since CI already ran every commit's build. A flaky failure has no window; when no passing run precedes the first failure, the report says the regression predates the runs listed.
+- **Regression window:** a real regression names the last green run and the first red one ("broke between #1 (ccc0000) and #2 (aaa0000)"); `git log <green>..<red>` lists the suspect commits. The method is git bisect's — the good and bad endpoints — answered from the run history instead of a binary search, since CI already ran every commit's build. The report also lists the files that changed between those two commits (GitHub's compare endpoint, capped at 10 with a count of the rest), so the fix starts from the suspect files, not just the suspect range; a compare that fails leaves the window line as it was. A flaky failure has no window; when no passing run precedes the first failure, the report says the regression predates the runs listed.
 
 Logs expire: GitHub keeps job logs for 90 days. A failed job whose log is gone is recorded, not fatal.
 
@@ -101,6 +102,7 @@ Logs expire: GitHub keeps job logs for 90 days. A failed job whose log is gone i
 ```sh
 ci-triage --mcp               # stdio MCP server: triage_repo, triage_log
 ci-triage --skill-generate    # write a SKILL.md for this project (never overwrites) and a short section in AGENTS.md
+ci-triage --skill-generate --agents  # same skill, in .agents/skills/ — the shared location Gemini CLI and Codex discover skills from
 ```
 
 `triage_log` classifies a pasted log without touching the network — useful when you already have the log open. Both tools return the same JSON the CLI's `--json` produces, as the text block and again as `structuredContent`, the MCP structured-output channel (each tool declares a loose `outputSchema: { type: 'object' }`; error results carry none), so a calling application can read the fields typed instead of parsing the text.
@@ -108,6 +110,8 @@ ci-triage --skill-generate    # write a SKILL.md for this project (never overwri
 The MCP server also serves one prompt, `triage_ci` (`prompts/list` / `prompts/get`): the one-shot "what broke in CI and what do I fix first?" workflow — call `triage_repo` with the repo (and workflow, if given), report the root causes ranked real regressions first, then flaky, then unknown, then known failures, and do not re-run or fix anything without the user agreeing — for MCP clients that let the user pick a prompt instead of typing a request. The method is FastMCP's: prompts are the third MCP primitive, the user-invoked template next to tools and resources. `triage_repo` also takes `knownFile`: a known-failures file to mark recorded clusters as known instead of new regressions.
 
 Claude Code users can install the skill without installing the CLI first: `/plugin marketplace add WJDdidi-1/ci-triage`, then `/plugin install ci-triage@ci-triage`. The skill lives in this repo at `skills/ci-triage/SKILL.md`, so skill indexes can find it too.
+
+Claude Desktop: the repo ships a `manifest.json` (MCPB, the renamed DXT format) — pack it with `npx @anthropic-ai/mcpb pack` and drag the `.mcpb` file onto Settings → Extensions. The bundle is just the server (zero dependencies, so there are no node_modules to bundle), and `.mcpbignore` keeps tests and tooling out of it.
 
 ## GitHub Action
 
@@ -133,9 +137,11 @@ On a real repo with 3 failed runs and 9 failed jobs, the triage took about 8 sec
 ## Development
 
 ```sh
-npm test            # node:test, no extra dependencies — 184 tests, run serially
+npm test            # node:test, no extra dependencies, run serially
 node scripts/bump-version.mjs <version>  # bump every version pin at once
 ```
+
+Coverage uses Node's built-in runner (Node 22+ only — the suite itself runs on Node 18+): `node --test --test-concurrency=1 --experimental-test-coverage --test-coverage-include='lib/**/*.mjs' --test-coverage-include='bin/*.js'`. The method is vitest's `--coverage`: measure first, then test the gaps the measurement shows, and leave the defensive paths uncovered on purpose rather than chasing the number.
 
 Releases bump the version with `node scripts/bump-version.mjs <version>`: it moves every version pin at once — package.json, package-lock.json, server.json and the marketplace metadata — renames the CHANGELOG's `## Unreleased` heading, and refuses a drifted tree before writing anything. The method is semantic-release's (one mechanical writer of version strings), without adopting semantic-release itself. The script is shared with dev-diagnosis: files a repo does not have (pre-commit manifest, demo tape) are skipped.
 

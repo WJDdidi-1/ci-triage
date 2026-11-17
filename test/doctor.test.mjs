@@ -189,6 +189,22 @@ test('doctor: global skill passes the skill check', () => {
   assert.match(result.stdout, /\[ok\] Skill — global skill installed and valid:/);
 });
 
+test('doctor: project agents skill passes the skill check', () => {
+  // --skill-generate --agents writes .agents/skills; doctor used to
+  // probe only the .claude homes, so that install read as "no
+  // SKILL.md installed" even though Gemini CLI and Codex would find it.
+  const home = tempDir('ci-triage-doctor-home-');
+  const binDir = tempDir('ci-triage-doctor-bin-');
+  writeFakeBinary(binDir, 'ci-triage');
+  const cwd = tempDir('ci-triage-doctor-cwd-');
+  fs.mkdirSync(path.join(cwd, '.agents', 'skills', 'ci-triage'), { recursive: true });
+  fs.writeFileSync(path.join(cwd, '.agents', 'skills', 'ci-triage', 'SKILL.md'),
+    '---\nname: ci-triage\ndescription: Triage red CI before reading any log.\n---\n\n# ci-triage\n');
+  const result = run(['doctor'], envFor(home, binDir, cwd));
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /\[ok\] Skill — project \(agents\) skill installed and valid:/);
+});
+
 test('doctor: broken skill frontmatter warns and names the problem, without failing', () => {
   const home = tempDir('ci-triage-doctor-home-');
   const binDir = tempDir('ci-triage-doctor-bin-');

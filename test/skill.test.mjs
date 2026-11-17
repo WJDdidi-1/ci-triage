@@ -94,3 +94,41 @@ test('skill: --skill-generate writes both SKILL.md and AGENTS.md', () => {
   assert.match(result.stdout, /Wrote .*AGENTS\.md/);
   assert.match(result.stdout, /Wrote .*SKILL\.md/);
 });
+
+test('skill: --agents flavor writes to .agents/skills, byte-identical to the Claude copy', () => {
+  // Gemini CLI discovers skills from .agents/skills/ (its own docs:
+  // "an interoperable path … compatible across different AI tools")
+  // and Codex scans .agents/skills too — but --skill-generate only
+  // ever wrote .claude/skills, so a Gemini/Codex user got a skill
+  // their agent never saw. The body is the same spec-valid file in
+  // both places; only the destination differs.
+  const dir = tempDir('ci-triage-skill-agents-dir-');
+  const out = generateSkill('project', dir, 'agents');
+  assert.equal(out.created, true);
+  assert.equal(out.path, path.join(dir, '.agents', 'skills', 'ci-triage', 'SKILL.md'));
+  assert.equal(fs.readFileSync(out.path, 'utf8'), SKILL_MD);
+  assert.ok(!fs.existsSync(path.join(dir, '.claude')));
+  // A second generate refuses to overwrite, like the Claude flavor.
+  const second = generateSkill('project', dir, 'agents');
+  assert.equal(second.created, false);
+  assert.match(second.reason, /already exists/);
+  // The AGENTS.md section points at the file that was actually written.
+  const section = ensureAgentsSection('project', dir, 'agents');
+  assert.equal(section.status, 'created');
+  assert.match(fs.readFileSync(path.join(dir, 'AGENTS.md'), 'utf8'), /Full skill: `\.agents\/skills\/ci-triage\/SKILL\.md`/);
+});
+
+test('skill: --skill-generate --agents via the CLI writes .agents/skills', () => {
+  const dir = tempDir('ci-triage-skill-agents-cli-');
+  const result = spawnSync(process.execPath, [bin, '--skill-generate', '--agents'], { encoding: 'utf8', cwd: dir });
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(fs.existsSync(path.join(dir, '.agents', 'skills', 'ci-triage', 'SKILL.md')));
+  assert.ok(!fs.existsSync(path.join(dir, '.claude')));
+  assert.match(result.stdout, /Wrote .*SKILL\.md/);
+});
+
+test('skill: --agents without --skill-generate is a usage error', () => {
+  const result = spawnSync(process.execPath, [bin, '--agents'], { encoding: 'utf8' });
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /only apply to --skill-generate/);
+});
