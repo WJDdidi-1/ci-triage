@@ -1,4 +1,10 @@
 * text=auto
+# The .mcpbignore file is parsed by the mcpb test with line-anchored
+# checks; a Windows checkout must not convert it to CRLF, or every
+# entry carries a \r and the test fails (the 2026-11-17 Windows CI
+# failures). The test itself is also CRLF-tolerant, so either guard
+# alone would do.
+.mcpbignore text eol=lf
 # The marketplace test compares the repo SKILL.md byte-for-byte with
 # the generator template (LF); a Windows checkout must not convert it.
 skills/*/SKILL.md text eol=lf

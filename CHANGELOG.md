@@ -130,6 +130,10 @@
   the tarball built in the same job, and no `cache:` input is set
   anywhere, so there is no package-manager cache to poison on the
   release-only workflows.
+- Fix: the 0.1.3 batch's new mcpb test failed on all four Windows CI
+  jobs: it split `.mcpbignore` on LF while a Windows checkout hands
+  it CRLF (this repo sets `* text=auto`). Pinned `text eol=lf` in
+  `.gitattributes`, and the test now splits on either ending.
 
 ## 0.1.2 — 2026-11-15
 
